@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import documents, chat, eval_routes
+from app.api import documents, chat
 
 app = FastAPI(title="Dungeon Master", version="1.0.0")
 

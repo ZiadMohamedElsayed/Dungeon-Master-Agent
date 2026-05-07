@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.core.vectorstore import ingest_file, lore_vectorstore, campaign_vectorstore
+from app.core.vectorstore import chunk_file, lore_vectorstore, campaign_vectorstore
 
 router = APIRouter()
 
@@ -15,9 +15,7 @@ def register_document_routes(prefix: str, vectorstore):
                 f"Supported formats: {', '.join(f.upper().lstrip('.') for f in SUPPORTED_FORMATS)}",
             )
         content = await file.read()
-        chunks, num_docs = ingest_file(
-            content, file.filename, source_name=file.filename
-        )
+        chunks, num_docs = chunk_file(content, file.filename, source_name=file.filename)
         vectorstore.add_documents(chunks)
         return {
             "message": "Ingested successfully",
