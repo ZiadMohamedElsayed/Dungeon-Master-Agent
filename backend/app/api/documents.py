@@ -9,6 +9,15 @@ SUPPORTED_FORMATS = (".pdf", ".txt", ".md")
 def register_document_routes(prefix: str, vectorstore):
     @router.post(f"/{prefix}/upload")
     async def upload_document(file: UploadFile = File(...)):
+        # Check if already uploaded
+        existing = lore_vectorstore._collection.get(
+            where={"source": {"$eq": file.filename}},
+            include=["metadatas"],
+        )
+        if existing["metadatas"]:
+            raise HTTPException(409, f"'{file.filename}' already ingested. Delete it first or use a different filename.")
+        
+        # Check if format not supported
         if not file.filename.lower().endswith(SUPPORTED_FORMATS):
             raise HTTPException(
                 400,
