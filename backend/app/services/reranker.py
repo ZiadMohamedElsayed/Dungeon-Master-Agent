@@ -8,7 +8,7 @@ _model = None
 def get_reranker() -> CrossEncoder:
     global _model
     if _model is None:
-        _model = CrossEncoder(settings.rerank_model)
+        _model = CrossEncoder(settings.rerank_model, device="cpu")
     return _model
 
 
@@ -18,6 +18,6 @@ def rerank(query: str, docs: list, top_k: int = None) -> list:
         return []
     model = get_reranker()
     pairs = [(query, doc.page_content) for doc in docs]
-    scores = model.predict(pairs)
+    scores = model.predict(pairs, convert_to_numpy=True)
     ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
     return [doc for _, doc in ranked[:top_k]]
