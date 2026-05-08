@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     campaign_dp_persist_dir: str = "./dp/campaign_history"
     embed_model: str = "all-MiniLM-L6-v2"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    llm_model: str = ""
+    llm_model: str = "gemini-3.1-flash-lite-preview"
     chunk_size: int = 512
     chunk_overlap: int = 64
     top_k_retrieve: int = 10

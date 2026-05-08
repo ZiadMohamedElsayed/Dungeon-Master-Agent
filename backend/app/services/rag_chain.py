@@ -1,7 +1,9 @@
 import google.generativeai as genai
-from app.core.vectorstore import get_lore_retriever, get_campaign_retriever
+from langchain.schema import Document
+from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
 from app.services.reranker import rerank
 from app.core.config import settings
+from datetime import datetime
 import asyncio
 
 genai.configure(api_key=settings.gemini_api_key)
@@ -26,10 +28,8 @@ Respond only as the Dungeon Master."""
 
 
 def _format_docs(docs: list, header: str) -> str:
-    """Format a list of LangChain Documents into a labeled context block."""
     if not docs:
         return f"[{header}: No relevant information found]\n"
-
     lines = [f"=== {header} ==="]
     for i, doc in enumerate(docs, 1):
         source = doc.metadata.get("source", "unknown")
@@ -54,25 +54,45 @@ Player action / query:
 Dungeon Master response:"""
 
 
+def _save_turn_to_campaign(player_action: str, dm_response: str, turn: int):
+    """Persist the current turn as a document in the campaign vectorstore."""
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    content = f"[Turn {turn} | {timestamp}]\nPlayer: {player_action}\nDM: {dm_response}"
+    doc = Document(
+        page_content=content,
+        metadata={
+            "source": "campaign_history",
+            "turn": turn,
+            "timestamp": timestamp,
+            "type": "turn_log",
+        },
+    )
+    campaign_vectorstore.add_documents([doc])
+
+
+def _get_turn_count() -> int:
+    """Count existing turn logs to number the next turn."""
+    try:
+        results = campaign_vectorstore._collection.get(
+            where={"type": {"$eq": "turn_log"}},
+            include=["metadatas"],
+        )
+        return len(results["metadatas"]) + 1
+    except Exception:
+        return 1
+
+
 async def play_turn(query: str) -> dict:
-    """
-    Full RAG pipeline:
-      1. Retrieve from both vectorstores in parallel
-      2. Rerank each result set independently
-      3. Build formatted context blocks
-      4. Construct prompt and call Gemini
-      5. Return structured response
-    """
     # Step 1: Retrieve from both stores concurrently
     lore_retriever = get_lore_retriever()
     campaign_retriever = get_campaign_retriever()
 
     raw_lore_docs, raw_campaign_docs = await asyncio.gather(
-        asyncio.to_thread(lore_retriever.get_relevant_documents, query),
-        asyncio.to_thread(campaign_retriever.get_relevant_documents, query),
+        asyncio.to_thread(lore_retriever.invoke, query),
+        asyncio.to_thread(campaign_retriever.invoke, query),
     )
 
-    # Step 2: Rerank each set independently (in parallel, both are CPU-bound)
+    # Step 2: Rerank each set independently
     lore_docs, campaign_docs = await asyncio.gather(
         asyncio.to_thread(rerank, query, raw_lore_docs),
         asyncio.to_thread(rerank, query, raw_campaign_docs),
@@ -87,8 +107,12 @@ async def play_turn(query: str) -> dict:
     response = await asyncio.to_thread(model.generate_content, prompt)
     answer = response.text.strip()
 
-    # Step 5: Return structured payload
+    # Step 5: Auto-save this turn into the campaign vectorstore
+    turn_number = await asyncio.to_thread(_get_turn_count)
+    await asyncio.to_thread(_save_turn_to_campaign, query, answer, turn_number)
+
     return {
+        "turn": turn_number,
         "answer": answer,
         "sources": {
             "lore": [
