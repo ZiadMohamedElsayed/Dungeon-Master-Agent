@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dungeon Master Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="header-title">
+      <span class="skull">☠</span>
+      <h1>Dungeon Master</h1>
+    </div>
+    <div class="header-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connecting...</span>
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="section-label">📜 World Lore</div>
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="loreFile" accept=".txt,.pdf,.md" />
+        <div class="icon">⚗️</div>
+        <p>Drop a lore scroll here<br><strong>.txt · .pdf · .md</strong></p>
+      </div>
+      <div class="upload-progress" id="uploadProgress">
+        <div class="upload-progress-bar" id="uploadBar"></div>
+      </div>
+      <div class="lore-list" id="loreList"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">⚔️ Campaign</div>
+      <div class="turn-counter">
+        <span class="num" id="turnNum">0</span>
+        <span class="label">Turns Played</span>
+      </div>
+      <div class="campaign-controls">
+        <button class="btn" id="historyBtn">📖 View History</button>
+        <button class="btn danger" id="resetBtn">🔥 Reset Campaign</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <div class="big-icon">🎲</div>
+        <p>Upload your world lore, then speak your first action to begin the adventure...</p>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <div class="input-wrapper">
+          <textarea id="queryInput" placeholder="Describe your action or speak to the world..." rows="1"></textarea>
+        </div>
+        <button class="send-btn" id="sendBtn"><span>⚔</span> Act</button>
+      </div>
+      <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+    </div>
+  </main>
+
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

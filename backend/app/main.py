@@ -9,6 +9,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=False,
 )
 
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
