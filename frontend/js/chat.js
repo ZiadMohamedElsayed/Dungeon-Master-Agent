@@ -49,11 +49,20 @@ export function appendDMMessage(text, turn, sources) {
   const hasCampaign = sources?.campaign?.length > 0;
   const hasSources  = hasLore || hasCampaign;
 
-  const loreSrcs = (sources?.lore || [])
-    .map(s => `<span class="source-chip">📜 ${escHtml(s.source)}</span>`).join('');
-  const campSrcs = (sources?.campaign || [])
-    .map(s => `<span class="source-chip">⚔ ${escHtml(s.source)}</span>`).join('');
+  const loreSrcs = [...new Map((sources?.lore || []).map(s => [s.source, s])).values()]
+  .map(s => `
+    <div class="source-chip">
+      <span class="chip-file">📜 ${escHtml(s.source)}</span>
+      <span class="chip-snippet">${escHtml(s.snippet)}</span>
+    </div>`).join('');
 
+  const campSrcs = [...new Map((sources?.campaign || []).map(s => [s.source, s])).values()]
+    .map(s => `
+      <div class="source-chip">
+        <span class="chip-file">⚔ ${escHtml(s.source)}</span>
+        <span class="chip-snippet">${escHtml(s.snippet)}</span>
+      </div>`).join('');
+      
   const el = document.createElement('div');
   el.className = 'message dm';
   el.innerHTML = `
