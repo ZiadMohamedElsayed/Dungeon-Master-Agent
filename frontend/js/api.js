@@ -27,12 +27,6 @@ export async function getLoreList() {
   return r.json();
 }
 
-export async function getCampaignHistory() {
-  const r = await fetch(`${BASE}/api/documents/campaign/history`);
-  if (!r.ok) throw new Error('Failed to load history');
-  return r.json();
-}
-
 export async function resetCampaign() {
   const r = await fetch(`${BASE}/api/documents/campaign/clear`, { method: 'DELETE' });
   if (!r.ok) throw new Error('Failed to reset campaign');

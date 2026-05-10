@@ -1,4 +1,4 @@
-import { uploadLore, getLoreList, getCampaignHistory, resetCampaign } from './api.js';
+import { uploadLore, getLoreList, resetCampaign } from './api.js';
 import { appendSystemMessage, showEmptyState } from './chat.js';
 
 // ── Toast ─────────────────────────────────────────────
@@ -83,15 +83,6 @@ export function initSidebar() {
     e.preventDefault();
     zone.classList.remove('dragover');
     handleUpload(e.dataTransfer.files[0]);
-  });
-
-  // history
-  document.getElementById('historyBtn').addEventListener('click', async () => {
-    try {
-      const data = await getCampaignHistory();
-      if (!data.total_turns) { showToast('No campaign history yet', 'error'); return; }
-      appendSystemMessage(`📖 Campaign History — ${data.total_turns} turns recorded`);
-    } catch { showToast('Could not load history', 'error'); }
   });
 
   // reset

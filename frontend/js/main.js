@@ -1,4 +1,4 @@
-import { checkHealth, getCampaignHistory, playTurn } from './api.js';
+import { checkHealth, playTurn } from './api.js';
 import { hideEmptyState, appendPlayerMessage, appendDMMessage, appendSystemMessage, appendTyping } from './chat.js';
 import { setStatus, setTurnCount, refreshLoreList, initSidebar, showToast } from './sidebar.js';
 
@@ -27,8 +27,7 @@ async function ping() {
 
 async function loadTurnCount() {
   try {
-    const data = await getCampaignHistory();
-    setTurnCount(data.total_turns || 0);
+    setTurnCount(0);
   } catch {}
 }
 
