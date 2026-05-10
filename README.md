@@ -1,6 +1,6 @@
 # Dungeon Master Agent
 
-An AI-powered Dungeon Master backend that runs tabletop RPG sessions using a Retrieval-Augmented Generation (RAG) pipeline. The agent draws from two separate knowledge bases — **World Lore** and **Campaign History** — to narrate vivid, consistent, and contextually grounded sessions powered by Google Gemini.
+An AI-powered Dungeon Master that runs tabletop RPG sessions using a Retrieval-Augmented Generation (RAG) pipeline. The agent draws from two separate knowledge bases — **World Lore** and **Campaign History** — to narrate vivid, consistent, and contextually grounded sessions powered by Google Gemini.
 
 ---
 
@@ -37,6 +37,9 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 
 | Layer | Technology |
 |---|---|
+| Frontend | FastAPI + Uvicorn |
+| LLM | HTML5 / JavaScript |
+| Styling | CSS3 |
 | API Framework | FastAPI + Uvicorn |
 | LLM | Google Gemini (`google-generativeai`) |
 | Embeddings | HuggingFace Sentence Transformers |
@@ -44,6 +47,9 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 | Reranker | CrossEncoder (`sentence-transformers`) |
 | Document Loaders | LangChain (PDF + Text) |
 | Config | Pydantic Settings + `.env` |
+
+
+
 
 ---
 
@@ -62,6 +68,16 @@ backend/
 │       ├── rag_chain.py     # Main RAG pipeline (retrieve → rerank → generate → save)
 │       └── reranker.py      # CrossEncoder reranking logic
 └── requirements.txt
+
+frontend/
+├── css/              
+│   └── styles.css           # Layout & chat UI styling.
+├── js/      
+│   ├── api.js               # Fetch wrapper for backend communication.
+│   ├── chat.js              # Chat UI logic: message rendering & input.
+│   ├── main.js              # Main entry point; coordinates JS modules.
+│   └── sidebar.js           # Document list & sidebar toggle logic.
+└── index.html               # Main HTML entry point.
 ```
 
 ---
@@ -104,36 +120,6 @@ backend/
 
 ---
 
-## API Endpoints
-
-### `POST /api/chat/`
-Submit a player action and receive a DM response.
-
-**Request:**
-```json
-{ "query": "I approach the hooded figure at the bar and ask what they know about the missing caravan." }
-```
-
-**Response:**
-```json
-{
-  "turn": 4,
-  "answer": "The figure slowly lifts their gaze...",
-  "sources": {
-    "lore": [{ "source": "world_lore.pdf", "snippet": "..." }],
-    "campaign": [{ "source": "campaign_history", "snippet": "..." }]
-  }
-}
-```
-
-### `POST /api/documents/lore`
-Upload a PDF or `.txt` file to the World Lore knowledge base.
-
-### `POST /api/documents/campaign`
-Upload a PDF or `.txt` file to seed the Campaign History knowledge base.
-
----
-
 ## Environment Variables
 
 | Variable | Description |
@@ -151,26 +137,7 @@ Upload a PDF or `.txt` file to seed the Campaign History knowledge base.
 
 ---
 
-## Current Status
-
-The backend is fully implemented and functional:
-
-- ✅ RAG pipeline with dual knowledge bases (lore + campaign)
-- ✅ Concurrent retrieval with CrossEncoder reranking
-- ✅ Gemini-powered DM narration
-- ✅ Auto-saving turns to campaign history
-- ✅ PDF and text document ingestion
-- ✅ REST API via FastAPI
-
----
-
 ## Next Steps
 
-### 1. 🖥️ Frontend
-Build a player-facing web interface for the game. This includes a chat-style UI for submitting player actions and reading DM responses, a document upload panel for ingesting lore and campaign files, a turn history log with source citations displayed per turn, and theming that fits the fantasy/RPG aesthetic.
-
-### 2. 📊 Evaluation
+📊 Evaluation
 Establish a systematic way to measure the quality of DM responses. This means building a benchmark dataset of player actions paired with ideal DM responses, defining metrics such as lore consistency, narrative immersion, context relevance, and decision-point clarity, integrating an LLM-as-judge pipeline to score responses automatically, and running regression checks when the prompt, retrieval strategy, or model is changed.
-
-### 3. 🌐 Multiplayer
-Extend the system to support multiple players in a shared session. This requires a session management layer to scope each campaign to a group of players, real-time communication (e.g. WebSockets) so all players see DM responses simultaneously, per-player character state tracking, and a shared campaign history that reflects all players' actions rather than a single user's.
