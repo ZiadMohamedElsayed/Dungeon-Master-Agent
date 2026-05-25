@@ -1,13 +1,15 @@
-import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.output_parser import StrOutputParser
+from langchain.schema.runnable import RunnableParallel, RunnableLambda, RunnablePassthrough
 from langchain.schema import Document
 from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
 from app.services.reranker import rerank
 from app.core.config import settings
 from datetime import datetime
-import asyncio
 
-genai.configure(api_key=settings.gemini_api_key)
-model = genai.GenerativeModel(settings.llm_model)
+llm = ChatGoogleGenerativeAI(model=settings.llm_model,
+                             google_api_key=settings.gemini_api_key)
 
 SYSTEM_PROMPT = """You are an expert, immersive Dungeon Master running a tabletop RPG session.
 You have access to two knowledge bases:
@@ -26,6 +28,10 @@ Your responsibilities:
 
 Respond only as the Dungeon Master."""
 
+prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT),
+    ("human", "{lore_context}\n\n{campaign_context}\n\nPlayer action: {query}")
+])
 
 def _format_docs(docs: list, header: str) -> str:
     if not docs:
@@ -35,24 +41,6 @@ def _format_docs(docs: list, header: str) -> str:
         source = doc.metadata.get("source", "unknown")
         lines.append(f"[{i}] (source: {source})\n{doc.page_content.strip()}")
     return "\n\n".join(lines)
-
-
-def _build_prompt(query: str, lore_context: str, campaign_context: str) -> str:
-    return f"""{SYSTEM_PROMPT}
-
----
-
-{lore_context}
-
-{campaign_context}
-
----
-
-Player action / query:
-{query}
-
-Dungeon Master response:"""
-
 
 def _save_turn_to_campaign(player_action: str, dm_response: str, turn: int):
     """Persist the current turn as a document in the campaign vectorstore."""
@@ -81,35 +69,41 @@ def _get_turn_count() -> int:
     except Exception:
         return 1
 
+retrieval_step = RunnableParallel(
+    lore_raw = RunnableLambda(lambda q: get_lore_retriever().invoke(q)),
+    campaign_raw = RunnableLambda(lambda q: get_campaign_retriever().invoke(q)),
+    query=RunnablePassthrough()
+)
+
+def _rerank_and_format(inputs: dict) -> dict:
+    query = inputs["query"]
+    lore_docs = rerank(inputs["lore_raw"], query)
+    campaign_docs = rerank(inputs["campaign_raw"], query)
+    return {
+        "query": query,
+        "lore_docs": lore_docs,
+        "campaign_docs": campaign_docs,
+        "lore_context": _format_docs(lore_docs, "World Lore"),
+        "campaign_context": _format_docs(campaign_docs, "Campaign History"),
+    }
+
+dm_chain = (
+    retrieval_step
+    | RunnableLambda(_rerank_and_format)
+    | RunnablePassthrough.assign(answer=(
+        prompt | llm | StrOutputParser()
+    ))
+)
 
 async def play_turn(query: str) -> dict:
-    # Step 1: Retrieve from both stores concurrently
-    lore_retriever = get_lore_retriever()
-    campaign_retriever = get_campaign_retriever()
+    result = await dm_chain.ainvoke(query)
 
-    raw_lore_docs, raw_campaign_docs = await asyncio.gather(
-        asyncio.to_thread(lore_retriever.invoke, query),
-        asyncio.to_thread(campaign_retriever.invoke, query),
-    )
+    answer = result["answer"]
+    lore_docs = result["lore_docs"]
+    campaign_docs = result["campaign_docs"]
 
-    # Step 2: Rerank each set independently
-    lore_docs, campaign_docs = await asyncio.gather(
-        asyncio.to_thread(rerank, query, raw_lore_docs),
-        asyncio.to_thread(rerank, query, raw_campaign_docs),
-    )
-
-    # Step 3: Build context blocks
-    lore_context = _format_docs(lore_docs, "World Lore")
-    campaign_context = _format_docs(campaign_docs, "Campaign History")
-
-    # Step 4: Build prompt and call LLM
-    prompt = _build_prompt(query, lore_context, campaign_context)
-    response = await asyncio.to_thread(model.generate_content, prompt)
-    answer = response.text.strip()
-
-    # Step 5: Auto-save this turn into the campaign vectorstore
-    turn_number = await asyncio.to_thread(_get_turn_count)
-    await asyncio.to_thread(_save_turn_to_campaign, query, answer, turn_number)
+    turn_number = _get_turn_count()
+    _save_turn_to_campaign(query, answer, turn_number)
 
     return {
         "turn": turn_number,
