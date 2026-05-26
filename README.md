@@ -121,7 +121,7 @@ frontend/
 5. Run the frontend:
    ```bash
    cd ../frontend
-   python -m http.server 5500
+   python -m http.server 5000
    ```
 ---
 

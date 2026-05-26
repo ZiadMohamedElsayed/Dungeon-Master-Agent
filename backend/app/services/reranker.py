@@ -8,4 +8,6 @@ reranker = CrossEncoderReranker(
 )
 
 def rerank(docs: list, query: str) -> list:
+    if not docs:
+        return []
     return reranker.compress_documents(docs, query)
