@@ -25,7 +25,7 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
    Prompt Builder
         │
         ▼
-   Google Gemini LLM
+   Google Gemini LLM        ← via LangChain ChatGoogleGenerativeAI
         │
         ▼
   DM Response + Auto-save turn to Campaign KB
@@ -37,19 +37,17 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 
 | Layer | Technology |
 |---|---|
-| Frontend | FastAPI + Uvicorn |
-| LLM | HTML5 / JavaScript |
+| Frontend | HTML5 / JavaScript |
 | Styling | CSS3 |
 | API Framework | FastAPI + Uvicorn |
-| LLM | Google Gemini (`google-generativeai`) |
+| LLM | Google Gemini via `langchain-google-genai` |
 | Embeddings | HuggingFace Sentence Transformers |
 | Vector Store | ChromaDB (via `langchain-chroma`) |
 | Reranker | CrossEncoder (`sentence-transformers`) |
+| Orchestration | LangChain LCEL |
 | Document Loaders | LangChain (PDF + Text) |
+| Evaluation | RAGAS (RubricsScore + faithfulness) |
 | Config | Pydantic Settings + `.env` |
-
-
-
 
 ---
 
@@ -66,18 +64,19 @@ backend/
 │   │   └── vectorstore.py   # ChromaDB setup, chunking, retrievers
 │   └── services/
 │       ├── rag_chain.py     # Main RAG pipeline (retrieve → rerank → generate → save)
-│       └── reranker.py      # CrossEncoder reranking logic
+│       ├── reranker.py      # CrossEncoder reranking logic
+│       └── evaluator.py     # RAGAS evaluation pipeline
 └── requirements.txt
 
 frontend/
-├── css/              
-│   └── styles.css           # Layout & chat UI styling.
-├── js/      
-│   ├── api.js               # Fetch wrapper for backend communication.
-│   ├── chat.js              # Chat UI logic: message rendering & input.
-│   ├── main.js              # Main entry point; coordinates JS modules.
-│   └── sidebar.js           # Document list & sidebar toggle logic.
-└── index.html               # Main HTML entry point.
+├── css/
+│   └── styles.css           # Layout & chat UI styling
+├── js/
+│   ├── api.js               # Fetch wrapper for backend communication
+│   ├── chat.js              # Chat UI logic: message rendering & input
+│   ├── main.js              # Main entry point; coordinates JS modules
+│   └── sidebar.js           # Document list & sidebar toggle logic
+└── index.html               # Main HTML entry point
 ```
 
 ---
@@ -86,13 +85,15 @@ frontend/
 
 1. **Document Ingestion** — Lore PDFs and text files are uploaded via `/api/documents`, chunked, embedded, and stored in the lore ChromaDB collection.
 
-2. **Turn Execution** — When a player submits an action via `/api/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores.
+2. **Turn Execution** — When a player submits an action via `/api/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores using a LangChain `RunnableParallel`.
 
 3. **Reranking** — Both retrieved sets are independently reranked using a CrossEncoder to surface the most contextually relevant chunks.
 
-4. **Generation** — A structured prompt combining the system instructions, lore context, campaign context, and player action is sent to Gemini, which responds in character as the Dungeon Master.
+4. **Generation** — A structured prompt combining the system instructions, lore context, campaign context, and player action is sent to Gemini via `ChatGoogleGenerativeAI`. The full response is awaited and returned as JSON.
 
 5. **Auto-Persistence** — Each completed turn (player action + DM response) is automatically saved back into the campaign vectorstore, building a living, searchable campaign history.
+
+6. **Evaluation** — Responses can be optionally evaluated by passing `"evaluate": true` in the request. Three custom DM-appropriate metrics scored 1–5 via an LLM judge are computed: `dm_relevance`, `lore_consistency`, and `narrative_quality`. When a `reference` answer is provided, `context_precision` and `context_recall` are also computed. Evaluation runs in a thread pool to avoid event loop conflicts with the RAGAS internals.
 
 ---
 
@@ -118,6 +119,12 @@ frontend/
    uvicorn app.main:app --reload
    ```
 
+5. Run the frontend:
+   ```bash
+   cd ../frontend
+   python -m http.server 5000
+   ```
+
 ---
 
 ## Environment Variables
@@ -139,5 +146,8 @@ frontend/
 
 ## Next Steps
 
-📊 Evaluation
-Establish a systematic way to measure the quality of DM responses. This means building a benchmark dataset of player actions paired with ideal DM responses, defining metrics such as lore consistency, narrative immersion, context relevance, and decision-point clarity, integrating an LLM-as-judge pipeline to score responses automatically, and running regression checks when the prompt, retrieval strategy, or model is changed.
+💾 **Save / Load Campaign**
+Allow players to export the current campaign history and reload it in a future session. This means serializing the ChromaDB campaign collection to a portable format (JSON or ZIP), exposing `/api/campaign/export` and `/api/campaign/import` endpoints, and wiring up save/load controls in the frontend sidebar.
+
+🌊 **Streaming**
+Stream the DM's response token by token instead of waiting for the full generation. This means switching `dm_chain.ainvoke()` to `dm_chain.astream()` in `rag_chain.py`, returning a `StreamingResponse` from the chat endpoint, and updating the frontend to consume the token stream and append to the DM bubble in real time.

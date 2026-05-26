@@ -5,6 +5,7 @@ from langchain.schema.runnable import RunnableParallel, RunnableLambda, Runnable
 from langchain.schema import Document
 from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
 from app.services.reranker import rerank
+from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
 from app.core.config import settings
 from datetime import datetime
 
@@ -95,7 +96,7 @@ dm_chain = (
     ))
 )
 
-async def play_turn(query: str) -> dict:
+async def play_turn(query: str, evaluate: bool = False, reference: str | None = None) -> dict:
     result = await dm_chain.ainvoke(query)
 
     answer = result["answer"]
@@ -105,7 +106,7 @@ async def play_turn(query: str) -> dict:
     turn_number = _get_turn_count()
     _save_turn_to_campaign(query, answer, turn_number)
 
-    return {
+    response = {
         "turn": turn_number,
         "answer": answer,
         "sources": {
@@ -119,3 +120,13 @@ async def play_turn(query: str) -> dict:
             ],
         },
     }
+
+    if evaluate:
+        if reference:
+            response["evaluation"] = await evaluate_with_reference(
+                query, answer, lore_docs, campaign_docs, reference)
+        else:
+            response["evaluation"] = await evaluate_without_reference(
+                query, answer, lore_docs, campaign_docs)
+
+    return response
