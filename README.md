@@ -118,6 +118,11 @@ frontend/
    uvicorn app.main:app --reload
    ```
 
+5. Run the frontend:
+   ```bash
+   cd ../frontend
+   python -m http.server 5500
+   ```
 ---
 
 ## Environment Variables
