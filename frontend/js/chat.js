@@ -104,6 +104,21 @@ export function appendSystemMessage(text, isError = false) {
   scrollBottom();
 }
 
+export function appendStreamingDM() {
+  const el = document.createElement('div');
+  el.className = 'message dm';
+  el.innerHTML = `
+    <div class="msg-header"><span class="role">☠ Dungeon Master</span></div>
+    <div class="msg-body"></div>
+  `;
+  messagesEl.appendChild(el);
+  const body = el.querySelector('.msg-body');
+  return {
+    update: (fullText) => { body.innerHTML = formatDMText(fullText); scrollBottom(); },
+    finish: (fullText, turn, sources) => { el.remove(); appendDMMessage(fullText, turn, sources); },
+  };
+}
+
 export function appendTyping() {
   const el = document.createElement('div');
   el.className = 'typing';

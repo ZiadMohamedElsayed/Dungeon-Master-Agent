@@ -45,6 +45,9 @@
       </div>
       <div class="campaign-controls">
         <button class="btn danger" id="resetBtn">🔥 Reset Campaign</button>
+        <button class="btn" id="saveBtn">💾 Save Campaign</button>
+        <button class="btn" id="loadBtn">📂 Load Campaign</button>
+        <input type="file" id="campaignFile" accept=".json" style="display:none" />
       </div>
     </div>
   </aside>
@@ -64,7 +67,7 @@
         </div>
         <button class="send-btn" id="sendBtn"><span>⚔</span> Act</button>
       </div>
-      <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+      <div class="input-hint">Enter to send · Shift+Enter for new line · <label><input type="checkbox" id="streamToggle" checked /> stream</label> · <label><input type="checkbox" id="evalToggle" /> evaluate</label></div>
     </div>
   </main>
 
