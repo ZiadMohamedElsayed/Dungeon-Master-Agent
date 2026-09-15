@@ -1,0 +1,34 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    # Secrets come from backend/.env (gitignored, never baked into the image)
+    env_file:
+      - ./backend/.env
+    environment:
+      LORE_DB_PERSIST_DIR: /app/dp/world_lore
+      CAMPAIGN_DB_PERSIST_DIR: /app/dp/campaign_history
+    volumes:
+      - chroma_data:/app/dp
+      - hf_cache:/opt/hf-cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5000:5000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+  hf_cache:
