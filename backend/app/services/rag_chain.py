@@ -1,8 +1,14 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
-from langchain.schema.runnable import RunnableParallel, RunnableLambda, RunnablePassthrough
-from langchain.schema import Document
+try:
+    from langchain.prompts import ChatPromptTemplate
+    from langchain.schema.output_parser import StrOutputParser
+    from langchain.schema.runnable import RunnableParallel, RunnableLambda, RunnablePassthrough
+    from langchain.schema import Document
+except ImportError:  # langchain >= 1.x moved to langchain_core
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.runnables import RunnableParallel, RunnableLambda, RunnablePassthrough
+    from langchain_core.documents import Document
 from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
 from app.services.reranker import rerank
 from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
