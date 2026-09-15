@@ -11,12 +11,15 @@ except ImportError:  # langchain >= 1.x moved to langchain_core
     from langchain_core.documents import Document
 from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
 from app.services.reranker import rerank
-from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
+from app.services.dice import roll_dice
 from app.core.config import settings
 from datetime import datetime
 
 llm = ChatGoogleGenerativeAI(model=settings.llm_model,
                              google_api_key=settings.gemini_api_key)
+llm_with_tools = llm.bind_tools([roll_dice])
+
+DICE_INSTRUCTIONS = """Dice (mandatory): whenever the player attempts an attack, skill check, saving throw, or any action with a chance-based outcome, you MUST call the `roll_dice` tool BEFORE narrating the outcome — never decide success/failure yourself. Pick the fitting notation (attacks/ability checks: '1d20'; weapon damage: e.g. '1d8+2'; pick locks/sneak: '1d20+modifier'). Narrate the outcome strictly from the real rolled total: high roll = success, low roll = failure or complication. State the roll naturally in character (e.g. 'The blade bites deep — a clean strike!'). Never reveal tool-call mechanics in character."""
 
 SYSTEM_PROMPT = """You are an expert, immersive Dungeon Master running a tabletop RPG session.
 You have access to two knowledge bases:
@@ -33,11 +36,13 @@ Your responsibilities:
 - End each turn with a clear decision point or open question for the players.
 - Never break character or acknowledge the RAG system.
 
-Respond only as the Dungeon Master."""
+{DICE_INSTRUCTIONS}
+
+Respond only as the Dungeon Master.""".replace("{DICE_INSTRUCTIONS}", DICE_INSTRUCTIONS)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("human", "{lore_context}\n\n{campaign_context}\n\nPlayer action: {query}")
+    ("human", "{lore_context}\n\n{campaign_context}\n\nPlayer action: {query}\n\n(Reminder: if this action could succeed or fail — attack, check, save, sneak, persuade — call the roll_dice tool FIRST and narrate strictly from the real result. Never narrate an outcome before rolling.)")
 ])
 
 def _format_docs(docs: list, header: str) -> str:
@@ -102,12 +107,67 @@ dm_chain = (
     ))
 )
 
-async def play_turn(query: str, evaluate: bool = False, reference: str | None = None) -> dict:
-    result = await dm_chain.ainvoke(query)
+_TOOLS_BY_NAME = {"roll_dice": roll_dice}
 
-    answer = result["answer"]
-    lore_docs = result["lore_docs"]
-    campaign_docs = result["campaign_docs"]
+def _text_of(content) -> str:
+    """Extract plain text from an LLM response content (str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") in ("text", None) and b.get("text"):
+                    parts.append(b["text"])
+            else:
+                t = getattr(b, "text", "")
+                if t:
+                    parts.append(t)
+        return "".join(parts)
+    return str(content)
+
+
+async def _generate_with_tools(formatted: dict, max_iters: int = 3) -> str:
+    """Run the DM LLM with tool calls (dice). Loops until no more tool calls."""
+    try:
+        from langchain_core.messages import ToolMessage
+    except ImportError:
+        from langchain.schema import ToolMessage  # type: ignore
+    messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "query") if k in formatted})
+    for _ in range(max_iters + 1):
+        response = await llm_with_tools.ainvoke(messages)
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if not tool_calls:
+            return _text_of(getattr(response, "content", ""))
+        import logging
+        logging.getLogger("uvicorn.error").info(
+            "DM tool calls: %s", [(c.get("name"), c.get("args")) for c in tool_calls]
+        )
+        messages.append(response)
+        for call in tool_calls:
+            name = call.get("name", "")
+            args = call.get("args", {}) or {}
+            call_id = call.get("id", "")
+            fn = _TOOLS_BY_NAME.get(name)
+            if fn is None:
+                messages.append(ToolMessage(content=f"Unknown tool '{name}'.", tool_call_id=call_id))
+                continue
+            try:
+                result = fn.invoke(args) if hasattr(fn, "invoke") else fn(**args)
+            except Exception as e:
+                result = f"Tool error: {e}"
+            messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+    # fallback: final plain answer if tools kept looping
+    final = await llm.ainvoke(messages)
+    return _text_of(getattr(final, "content", ""))
+
+async def play_turn(query: str, evaluate: bool = False, reference: str | None = None) -> dict:
+    retrieved = await retrieval_step.ainvoke(query)
+    formatted = _rerank_and_format(retrieved)
+    answer = await _generate_with_tools(formatted)
+
+    lore_docs = formatted["lore_docs"]
+    campaign_docs = formatted["campaign_docs"]
 
     turn_number = _get_turn_count()
     _save_turn_to_campaign(query, answer, turn_number)
