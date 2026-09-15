@@ -1,4 +1,4 @@
-import { uploadLore, getLoreList, resetCampaign } from './api.js';
+import { uploadLore, deleteLore, getLoreList, resetCampaign, exportCampaign, importCampaign } from './api.js';
 import { appendSystemMessage, showEmptyState } from './chat.js';
 
 // ── Toast ─────────────────────────────────────────────
@@ -29,13 +29,23 @@ export async function refreshLoreList() {
   try {
     const data = await getLoreList();
     const el   = document.getElementById('loreList');
-    const docs  = data.documents || [];
-    el.innerHTML = docs.map(doc => `
+    const details = data.details || (data.documents || []).map(name => ({ name, chunks: '?' }));
+    el.innerHTML = details.map(doc => `
       <div class="lore-item">
-        <span title="${doc}">📄 ${doc}</span>
-        <span class="chunks">${data.total_chunks} chunks</span>
+        <span title="${doc.name}">📄 ${doc.name}</span>
+        <span class="chunks">${doc.chunks} chunks</span>
+        <button class="del" data-file="${doc.name}" title="Remove">✕</button>
       </div>
     `).join('');
+    el.querySelectorAll('.del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await deleteLore(btn.dataset.file);
+          showToast(`✦ ${btn.dataset.file} removed`, 'success');
+          await refreshLoreList();
+        } catch (err) { showToast(`✗ ${err.message}`, 'error'); }
+      });
+    });
   } catch {}
 }
 
@@ -94,5 +104,33 @@ export function initSidebar() {
       showEmptyState('The campaign has been reset. A new adventure awaits...');
       showToast('✦ Campaign reset. The world endures.', 'success');
     } catch { showToast('Failed to reset', 'error'); }
+  });
+
+  // save
+  document.getElementById('saveBtn')?.addEventListener('click', async () => {
+    try {
+      const data = await exportCampaign();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `campaign-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      showToast('✦ Campaign saved', 'success');
+    } catch { showToast('Save failed', 'error'); }
+  });
+
+  // load
+  const campInput = document.getElementById('campaignFile');
+  document.getElementById('loadBtn')?.addEventListener('click', () => campInput.click());
+  campInput?.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const data = await importCampaign(f);
+      showToast(`✦ Campaign loaded — ${data.turns_added} turns`, 'success');
+      const { getTurnCount } = await import('./api.js');
+      setTurnCount((await getTurnCount()).turns ?? 0);
+    } catch (err) { showToast(`✗ ${err.message}`, 'error'); }
+    finally { e.target.value = ''; }
   });
 }
