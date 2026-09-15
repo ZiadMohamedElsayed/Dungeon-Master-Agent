@@ -33,6 +33,7 @@ Your responsibilities:
 - Clearly distinguish world-lore flavor from campaign-specific continuity in your narration.
 - If the context does not cover something, improvise creatively but stay tonally consistent with the retrieved material.
 - Narrate in vivid, second-person present tense ("You see...", "The guard snarls at you...").
+- Never copy past narration verbatim — always advance the story from the CURRENT player action and its dice result.
 - End each turn with a clear decision point or open question for the players.
 - Never break character or acknowledge the RAG system.
 
@@ -215,11 +216,86 @@ async def play_turn(query: str, evaluate: bool = False, reference: str | None = 
     }
 
     if evaluate:
-        if reference:
-            response["evaluation"] = await evaluate_with_reference(
-                query, answer, lore_docs, campaign_docs, reference)
-        else:
-            response["evaluation"] = await evaluate_without_reference(
-                query, answer, lore_docs, campaign_docs)
+        try:
+            from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
+            if reference:
+                response["evaluation"] = await evaluate_with_reference(
+                    query, answer, lore_docs, campaign_docs, reference)
+            else:
+                response["evaluation"] = await evaluate_without_reference(
+                    query, answer, lore_docs, campaign_docs)
+        except Exception as e:
+            response["evaluation"] = {"error": f"evaluation unavailable: {e}"}
 
     return response
+
+
+async def stream_turn(query: str):
+    """Yield SSE dicts: sources, dice?, token*, done|error (with save on done)."""
+    try:
+        from langchain_core.messages import ToolMessage
+    except ImportError:
+        from langchain.schema import ToolMessage  # type: ignore
+    try:
+        retrieved = await retrieval_step.ainvoke(query)
+        formatted = _rerank_and_format(retrieved)
+        lore_docs = formatted["lore_docs"]
+        campaign_docs = formatted["campaign_docs"]
+        sources = {
+            "lore": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in lore_docs],
+            "campaign": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in campaign_docs],
+        }
+        yield {"type": "sources", "sources": sources}
+        # Probe: does this turn need dice? If not, the probe response already
+        # holds the full narration — emit it as token chunks (a post-answer
+        # continuation stream would come back empty). If tools were called,
+        # resolve them, then genuinely stream the concluding narration.
+        messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "query") if k in formatted})
+        first = await llm_with_tools.ainvoke(messages)
+        first_calls = getattr(first, "tool_calls", None) or []
+        full: list[str] = []
+        if not first_calls:
+            answer = _text_of(getattr(first, "content", ""))
+            for i in range(0, len(answer), 60):
+                piece = answer[i:i + 60]
+                full.append(piece)
+                yield {"type": "token", "token": piece}
+        else:
+            messages.append(first)
+            final_text = ""
+            for _ in range(4):
+                response = await llm_with_tools.ainvoke(messages)
+                tool_calls = getattr(response, "tool_calls", None) or []
+                if not tool_calls:
+                    final_text = _text_of(getattr(response, "content", ""))
+                    break
+                messages.append(response)
+                for call in tool_calls:
+                    name = call.get("name", "")
+                    args = call.get("args", {}) or {}
+                    call_id = call.get("id", "")
+                    fn = _TOOLS_BY_NAME.get(name)
+                    result = None
+                    if fn is None:
+                        result = f"Unknown tool '{name}'."
+                    else:
+                        try:
+                            result = fn.invoke(args) if hasattr(fn, "invoke") else fn(**args)
+                        except Exception as e:
+                            result = f"Tool error: {e}"
+                    messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+                    if name == "roll_dice":
+                        yield {"type": "dice", "notation": (args or {}).get("notation", ""), "result": str(result)}
+            for i in range(0, len(final_text), 60):
+                piece = final_text[i:i + 60]
+                full.append(piece)
+                yield {"type": "token", "token": piece}
+        answer = "".join(full)
+        if not answer:
+            yield {"type": "error", "message": "The DM received an empty response. Try again."}
+            return
+        turn_number = _get_turn_count()
+        _save_turn_to_campaign(query, answer, turn_number)
+        yield {"type": "done", "turn": turn_number, "answer": answer, "sources": sources}
+    except Exception as e:
+        yield {"type": "error", "message": f"The DM is silent ({type(e).__name__}: {str(e)[:200]})"}
