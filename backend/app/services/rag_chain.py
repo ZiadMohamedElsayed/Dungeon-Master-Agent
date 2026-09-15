@@ -13,7 +13,7 @@ from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, cam
 from app.services.reranker import rerank
 from app.services.dice import roll_dice
 from app.core.config import settings
-from datetime import datetime
+from datetime import datetime, timezone
 
 llm = ChatGoogleGenerativeAI(model=settings.llm_model,
                              google_api_key=settings.gemini_api_key)
@@ -56,7 +56,7 @@ def _format_docs(docs: list, header: str) -> str:
 
 def _save_turn_to_campaign(player_action: str, dm_response: str, turn: int):
     """Persist the current turn as a document in the campaign vectorstore."""
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     content = f"[Turn {turn} | {timestamp}]\nPlayer: {player_action}\nDM: {dm_response}"
     doc = Document(
         page_content=content,
@@ -71,15 +71,42 @@ def _save_turn_to_campaign(player_action: str, dm_response: str, turn: int):
 
 
 def _get_turn_count() -> int:
-    """Count existing turn logs to number the next turn."""
+    """Next turn number = max(existing turn)+1 (safe against deletes)."""
     try:
         results = campaign_vectorstore._collection.get(
             where={"type": {"$eq": "turn_log"}},
             include=["metadatas"],
         )
-        return len(results["metadatas"]) + 1
+        metadatas = results.get("metadatas") or []
+        if not metadatas:
+            return 1
+        turns = [m.get("turn", 0) for m in metadatas if isinstance(m, dict)]
+        return max(turns, default=0) + 1
     except Exception:
         return 1
+
+
+def get_turn_count() -> int:
+    """Public: how many turns have been played (for the turn counter)."""
+    return _get_turn_count() - 1
+
+
+def get_campaign_history(limit: int = 50) -> list:
+    try:
+        results = campaign_vectorstore._collection.get(
+            where={"type": {"$eq": "turn_log"}},
+            include=["metadatas", "documents"],
+            limit=limit,
+        )
+        docs = results.get("documents") or []
+        metas = results.get("metadatas") or []
+        turns = sorted(
+            [{"content": d, **(m or {})} for d, m in zip(docs, metas)],
+            key=lambda x: x.get("turn", 0),
+        )
+        return turns
+    except Exception:
+        return []
 
 retrieval_step = RunnableParallel(
     lore_raw = RunnableLambda(lambda q: get_lore_retriever().invoke(q)),
