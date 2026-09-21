@@ -22,11 +22,13 @@ llm_with_tools = llm.bind_tools([roll_dice])
 DICE_INSTRUCTIONS = """Dice (mandatory): whenever the player attempts an attack, skill check, saving throw, or any action with a chance-based outcome, you MUST call the `roll_dice` tool BEFORE narrating the outcome — never decide success/failure yourself. Pick the fitting notation (attacks/ability checks: '1d20'; weapon damage: e.g. '1d8+2'; pick locks/sneak: '1d20+modifier'). Narrate the outcome strictly from the real rolled total: high roll = success, low roll = failure or complication. State the roll naturally in character (e.g. 'The blade bites deep — a clean strike!'). Never reveal tool-call mechanics in character."""
 
 SYSTEM_PROMPT = """You are an expert, immersive Dungeon Master running a tabletop RPG session.
-You have access to two knowledge bases:
+You have access to three kinds of context:
 
 1. **World Lore** – The deep history, factions, geography, religions, magic systems, and lore of the world. Use this for world-building details, NPC backgrounds, location descriptions, and anything that exists in the established fiction.
 
-2. **Campaign History** – The events, decisions, and consequences that have unfolded specifically in this campaign. Use this to maintain continuity with past sessions, remember player choices, and track ongoing plot threads.
+2. **Campaign History** – Semantically retrieved past events, decisions, and consequences from this campaign. Use this to maintain continuity with older sessions and ongoing plot threads.
+
+3. **Recent Turns** – The last few turns quoted verbatim (short-term memory). This is the immediate conversational state — always prefer it over older retrieved summaries when they conflict, and use it to resolve pronouns ("him", "it", "there") and follow-up actions.
 
 Your responsibilities:
 - Stay strictly consistent with retrieved lore and campaign history. Never contradict established facts.
@@ -43,7 +45,7 @@ Respond only as the Dungeon Master.""".replace("{DICE_INSTRUCTIONS}", DICE_INSTR
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("human", "{lore_context}\n\n{campaign_context}\n\nPlayer action: {query}\n\n(Reminder: if this action could succeed or fail — attack, check, save, sneak, persuade — call the roll_dice tool FIRST and narrate strictly from the real result. Never narrate an outcome before rolling.)")
+    ("human", "{lore_context}\n\n{campaign_context}\n\n{recent_context}\n\nPlayer action: {query}\n\n(Reminder: if this action could succeed or fail — attack, check, save, sneak, persuade — call the roll_dice tool FIRST and narrate strictly from the real result. Never narrate an outcome before rolling.)")
 ])
 
 def _format_docs(docs: list, header: str) -> str:
@@ -109,6 +111,29 @@ def get_campaign_history(limit: int = 50) -> list:
     except Exception:
         return []
 
+def get_recent_turns(limit: int | None = None) -> list:
+    """Short-term memory: last N turns verbatim, oldest-first."""
+    n = limit if limit is not None else settings.short_term_turns
+    if n <= 0:
+        return []
+    # get_campaign_history returns oldest-first, already sorted by turn
+    turns = get_campaign_history(limit=1000)
+    return turns[-n:] if len(turns) > n else turns
+
+
+def _format_recent_turns(turns: list) -> str:
+    if not turns:
+        return "[Recent Turns: none yet — this is the start of the campaign]\n"
+    max_chars = settings.short_term_max_chars
+    lines = ["=== Recent Turns (short-term memory, verbatim) ==="]
+    for t in turns:
+        content = t.get("content", "")
+        if len(content) > max_chars:
+            content = content[:max_chars] + "… [truncated]"
+        lines.append(content.strip())
+    return "\n\n".join(lines)
+
+
 retrieval_step = RunnableParallel(
     lore_raw = RunnableLambda(lambda q: get_lore_retriever().invoke(q)),
     campaign_raw = RunnableLambda(lambda q: get_campaign_retriever().invoke(q)),
@@ -119,12 +144,23 @@ def _rerank_and_format(inputs: dict) -> dict:
     query = inputs["query"]
     lore_docs = rerank(inputs["lore_raw"], query)
     campaign_docs = rerank(inputs["campaign_raw"], query)
+    # Short-term memory: verbatim recent turns (recency, not semantic search).
+    recent_turns = get_recent_turns()
+    recent_turn_numbers = {t.get("turn") for t in recent_turns if isinstance(t, dict)}
+    # De-dupe: drop semantically retrieved campaign docs already in the
+    # verbatim recent window so we don't waste tokens repeating them.
+    campaign_docs = [
+        d for d in campaign_docs
+        if d.metadata.get("turn") not in recent_turn_numbers
+    ]
     return {
         "query": query,
         "lore_docs": lore_docs,
         "campaign_docs": campaign_docs,
+        "recent_turns": recent_turns,
         "lore_context": _format_docs(lore_docs, "World Lore"),
         "campaign_context": _format_docs(campaign_docs, "Campaign History"),
+        "recent_context": _format_recent_turns(recent_turns),
     }
 
 dm_chain = (
@@ -161,7 +197,7 @@ async def _generate_with_tools(formatted: dict, max_iters: int = 3) -> str:
         from langchain_core.messages import ToolMessage
     except ImportError:
         from langchain.schema import ToolMessage  # type: ignore
-    messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "query") if k in formatted})
+    messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "recent_context", "query") if k in formatted})
     for _ in range(max_iters + 1):
         response = await llm_with_tools.ainvoke(messages)
         tool_calls = getattr(response, "tool_calls", None) or []
@@ -196,6 +232,7 @@ async def play_turn(query: str, evaluate: bool = False, reference: str | None = 
 
     lore_docs = formatted["lore_docs"]
     campaign_docs = formatted["campaign_docs"]
+    recent_turns = formatted.get("recent_turns", [])
 
     turn_number = _get_turn_count()
     _save_turn_to_campaign(query, answer, turn_number)
@@ -203,6 +240,7 @@ async def play_turn(query: str, evaluate: bool = False, reference: str | None = 
     response = {
         "turn": turn_number,
         "answer": answer,
+        "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)],
         "sources": {
             "lore": [
                 {"source": d.metadata.get("source"), "snippet": d.page_content[:200]}
@@ -241,6 +279,7 @@ async def stream_turn(query: str):
         formatted = _rerank_and_format(retrieved)
         lore_docs = formatted["lore_docs"]
         campaign_docs = formatted["campaign_docs"]
+        recent_turns = formatted.get("recent_turns", [])
         sources = {
             "lore": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in lore_docs],
             "campaign": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in campaign_docs],
@@ -250,7 +289,7 @@ async def stream_turn(query: str):
         # holds the full narration — emit it as token chunks (a post-answer
         # continuation stream would come back empty). If tools were called,
         # resolve them, then genuinely stream the concluding narration.
-        messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "query") if k in formatted})
+        messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "recent_context", "query") if k in formatted})
         first = await llm_with_tools.ainvoke(messages)
         first_calls = getattr(first, "tool_calls", None) or []
         full: list[str] = []
@@ -296,6 +335,6 @@ async def stream_turn(query: str):
             return
         turn_number = _get_turn_count()
         _save_turn_to_campaign(query, answer, turn_number)
-        yield {"type": "done", "turn": turn_number, "answer": answer, "sources": sources}
+        yield {"type": "done", "turn": turn_number, "answer": answer, "sources": sources, "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)]}
     except Exception as e:
         yield {"type": "error", "message": f"The DM is silent ({type(e).__name__}: {str(e)[:200]})"}

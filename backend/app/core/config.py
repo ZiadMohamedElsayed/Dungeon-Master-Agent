@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=64, alias="CHUNK_OVERLAP")
     top_k_retrieve: int = Field(default=10, alias="TOP_K_RETRIEVE")
     top_k_rerank: int = Field(default=4, alias="TOP_K_RERANK")
+    short_term_turns: int = Field(default=5, alias="SHORT_TERM_TURNS")
+    short_term_max_chars: int = Field(default=1500, alias="SHORT_TERM_MAX_CHARS")
 
     def resolved_lore_dir(self) -> str:
         # Prefer new var unless it is still default and old var was customized

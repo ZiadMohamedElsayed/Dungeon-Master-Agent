@@ -6,6 +6,7 @@ from app.services.rag_chain import (
     stream_turn,
     get_turn_count,
     get_campaign_history,
+    get_recent_turns,
 )
 from app.core.vectorstore import campaign_vectorstore, chunk_file
 import json
@@ -44,6 +45,11 @@ async def turn_count():
 @router.get("/turns/history")
 async def turn_history(limit: int = 50):
     return {"turns": get_campaign_history(limit=limit)}
+
+
+@router.get("/turns/recent")
+async def recent_turns(limit: int | None = None):
+    return {"turns": get_recent_turns(limit=limit)}
 
 
 @router.get("/export")
