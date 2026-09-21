@@ -1,6 +1,6 @@
 # Dungeon Master Agent
 
-An AI-powered Dungeon Master that runs tabletop RPG sessions using a Retrieval-Augmented Generation (RAG) pipeline. The agent draws from two separate knowledge bases — **World Lore** and **Campaign History** — to narrate vivid, consistent, and contextually grounded sessions powered by Google Gemini. Chance-based outcomes are decided by real dice rolls the DM makes through a tool call, and responses stream to the UI token by token.
+An AI-powered Dungeon Master that runs tabletop RPG sessions using a Retrieval-Augmented Generation (RAG) pipeline. The agent draws from two separate knowledge bases — **World Lore** and **Campaign History** — plus verbatim **short-term memory** of the last few turns, to narrate vivid, consistent, and contextually grounded sessions powered by Google Gemini. Chance-based outcomes are decided by real dice rolls the DM makes through a tool call, and responses stream to the UI token by token.
 
 ---
 
@@ -21,6 +21,9 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
         ▼
    Cross-Encoder Reranker   ← sentence-transformers
         │
+        ▼
+   Recent Turns (verbatim) ← short-term memory, last N turns
+        │  (overlapping retrieved campaign chunks de-duplicated)
         ▼
    Prompt Builder
         │
@@ -59,13 +62,13 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 backend/
 ├── app/
 │   ├── api/
-│   │   ├── chat.py          # POST /api/chat/ (JSON or SSE stream), turn count/history, export/import
+│   │   ├── chat.py          # POST /api/chat/ (JSON or SSE stream), turn count/history/recent, export/import
 │   │   └── documents.py     # Lore & campaign ingestion: upload / list / delete / clear
 │   ├── core/
 │   │   ├── config.py        # Environment & settings (documented env aliases)
 │   │   └── vectorstore.py   # ChromaDB setup, chunking, retrievers
 │   └── services/
-│       ├── rag_chain.py     # RAG pipeline: retrieve → rerank → dice tools → generate → save
+│       ├── rag_chain.py     # RAG pipeline: retrieve → rerank → recent turns → dice tools → generate → save
 │       ├── reranker.py      # CrossEncoder reranking logic
 │       ├── dice.py          # roll_dice tool (NdM+K parser + LangChain tool)
 │       └── evaluator.py     # RAGAS evaluation pipeline (lazy-loaded)
@@ -98,13 +101,13 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 
 1. **Document Ingestion** — Lore PDFs, Markdown, and text files are uploaded via `/api/documents/lore/upload`, chunked, embedded, and stored in the lore ChromaDB collection (10 MB cap, 409 on duplicates, per-file delete).
 
-2. **Turn Execution** — When a player submits an action via `/api/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores using a LangChain `RunnableParallel`.
+2. **Turn Execution** — When a player submits an action via `/api/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores using a LangChain `RunnableParallel`. The last `SHORT_TERM_TURNS` turns are also loaded verbatim as short-term memory (oldest-first, per-turn char cap); retrieved campaign chunks already in that window are de-duplicated.
 
 3. **Reranking** — Both retrieved sets are independently reranked using a CrossEncoder to surface the most contextually relevant chunks.
 
 4. **Dice (tool calls)** — If the action has a chance-based outcome (attack, check, save…), the DM must call the `roll_dice` tool first and narrate strictly from the real result instead of inventing one. Rolls are logged server-side and streamed to the UI as 🎲 events. Players can also roll manually with `/roll 2d6+3`.
 
-5. **Generation** — A structured prompt combining system instructions, lore context, campaign context, and the player action is sent to Gemini. Responses stream back as SSE (`sources → dice? → token* → done`) and render live; plain JSON is returned when `stream: false`.
+5. **Generation** — A structured prompt combining system instructions, lore context, campaign context, recent turns, and the player action is sent to Gemini. Responses stream back as SSE (`sources → dice? → token* → done`) and render live; plain JSON is returned when `stream: false`. Both paths report which recent turns were in context (`recent_turns`).
 
 6. **Auto-Persistence** — Each completed turn (player action + DM response) is automatically saved back into the campaign vectorstore, building a living, searchable campaign history. Campaigns can be exported/imported as JSON from the sidebar.
 
@@ -159,6 +162,8 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | `CAMPAIGN_DB_PERSIST_DIR` | ChromaDB persistence path for campaign |
 | `TOP_K_RETRIEVE` | Number of chunks to retrieve per store |
 | `TOP_K_RERANK` | Number of chunks to keep after reranking |
+| `SHORT_TERM_TURNS` | Number of recent turns injected verbatim (default `5`) |
+| `SHORT_TERM_MAX_CHARS` | Per-turn char cap in short-term memory (default `1500`) |
 | `CHUNK_SIZE` | Document chunk size (characters) |
 | `CHUNK_OVERLAP` | Chunk overlap (characters) |
 
@@ -171,6 +176,7 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | `POST /api/chat/` | Player turn (`{query, evaluate?, reference?, stream?}` → JSON or SSE) |
 | `GET /api/chat/turns/count` | Number of turns played |
 | `GET /api/chat/turns/history` | Recent turn logs |
+| `GET /api/chat/turns/recent` | Short-term memory window (`?limit=N`, default `SHORT_TERM_TURNS`) |
 | `GET /api/chat/export` | Campaign JSON export |
 | `POST /api/chat/import` | Campaign JSON import |
 | `POST /api/documents/{lore,campaign}/upload` | Ingest `.pdf`/`.md`/`.txt` |
