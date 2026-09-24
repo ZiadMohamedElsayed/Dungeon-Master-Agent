@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     campaign_dp_persist_dir: str = "./dp/campaign_history"
     embed_model: str = Field(default="all-MiniLM-L6-v2", alias="EMBED_MODEL")
     rerank_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2", alias="RERANK_MODEL")
-    llm_model: str = Field(default="gemini-2.5-flash", alias="LLM_MODEL")
+    llm_model: str = Field(default="gemini-3.8-flash", alias="LLM_MODEL")
     chunk_size: int = Field(default=512, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=64, alias="CHUNK_OVERLAP")
     top_k_retrieve: int = Field(default=10, alias="TOP_K_RETRIEVE")

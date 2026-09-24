@@ -1,122 +1,170 @@
-import asyncio
-import math
-from functools import partial
+"""DM response evaluation via direct Gemini-judge calls (1-5 rubrics).
 
-from ragas import evaluate, EvaluationDataset, SingleTurnSample
-from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall, RubricsScore
-from ragas.llms import LangchainLLMWrapper
-from ragas.embeddings import LangchainEmbeddingsWrapper
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+Replaces RAGAS (0.3.1 and even 0.4.3 hard-import
+`langchain_community.chat_models.vertexai`, removed in
+langchain-community 0.4.x — unfixable without shims).
+
+Each metric is one async LLM call running a fixed 1-5 rubric over the
+turn's query/answer/retrieved contexts (+ reference when provided).
+`evaluate_turn` is @traceable so evaluations show up in LangSmith.
+"""
+
+import asyncio
+import re
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 from app.core.config import settings
 
-# ── Custom DM-appropriate metrics ────────────────────────────────────────────
+try:
+    from langsmith import traceable
+except ImportError:  # langsmith not installed (e.g. old docker image)
 
-dm_relevance = RubricsScore(
-    name="dm_relevance",
-    rubrics={
-        "score1_description": "The response completely ignores the player's action or contradicts it.",
-        "score2_description": "The response barely acknowledges the player's action with little narrative build.",
-        "score3_description": "The response addresses the action but the narrative connection is weak or generic.",
-        "score4_description": "The response directly addresses the action with good narrative coherence.",
-        "score5_description": "The response masterfully builds upon the action in a rich, narratively compelling way.",
-    }
-)
+    def traceable(*dargs, **dkwargs):
+        def wrap(fn):
+            return fn
 
-lore_consistency = RubricsScore(
-    name="lore_consistency",
-    rubrics={
-        "score1_description": "The response directly contradicts multiple established lore or campaign facts.",
-        "score2_description": "The response contradicts at least one established fact.",
-        "score3_description": "The response is mostly consistent but introduces ambiguous or uncertain details.",
-        "score4_description": "The response is consistent with all retrieved lore and campaign history.",
-        "score5_description": "The response is perfectly consistent and enriches the established lore naturally.",
-    }
-)
-
-narrative_quality = RubricsScore(
-    name="narrative_quality",
-    rubrics={
-        "score1_description": "The response is flat, has no sensory detail, and ends with no decision point.",
-        "score2_description": "The response has minimal immersion and a weak or missing decision point.",
-        "score3_description": "The response is moderately immersive with a clear but uninspired decision point.",
-        "score4_description": "The response is vivid and engaging with a clear, meaningful decision point.",
-        "score5_description": "The response is exceptionally immersive, uses rich sensory detail, and ends with a compelling, dramatically tense decision point.",
-    }
-)
+        if dargs and callable(dargs[0]) and len(dargs) == 1 and not dkwargs:
+            return dargs[0]
+        return wrap
 
 
-def _build_contexts(lore_docs: list, campaign_docs: list) -> list:
-    return [doc.page_content for doc in lore_docs + campaign_docs]
+# ── Rubrics (name → score descriptions) ──────────────────────────────────────
+
+RUBRICS: dict[str, dict[str, str]] = {
+    "dm_relevance": {
+        "1": "The response completely ignores the player's action or contradicts it.",
+        "2": "The response barely acknowledges the player's action with little narrative build.",
+        "3": "The response addresses the action but the narrative connection is weak or generic.",
+        "4": "The response directly addresses the action with good narrative coherence.",
+        "5": "The response masterfully builds upon the action in a rich, narratively compelling way.",
+    },
+    "lore_consistency": {
+        "1": "The response directly contradicts multiple established lore or campaign facts.",
+        "2": "The response contradicts at least one established fact.",
+        "3": "The response is mostly consistent but introduces ambiguous or uncertain details.",
+        "4": "The response is consistent with all retrieved lore and campaign history.",
+        "5": "The response is perfectly consistent and enriches the established lore naturally.",
+    },
+    "narrative_quality": {
+        "1": "The response is flat, has no sensory detail, and ends with no decision point.",
+        "2": "The response has minimal immersion and a weak or missing decision point.",
+        "3": "The response is moderately immersive with a clear but uninspired decision point.",
+        "4": "The response is vivid and engaging with a clear, meaningful decision point.",
+        "5": "The response is exceptionally immersive, uses rich sensory detail, and ends with a compelling, dramatically tense decision point.",
+    },
+    "context_precision": {
+        "1": "None of the retrieved context is relevant to the reference answer.",
+        "2": "Only a small fraction of the retrieved context is relevant.",
+        "3": "About half of the retrieved context is relevant.",
+        "4": "Most of the retrieved context is relevant.",
+        "5": "All retrieved context is relevant to the reference answer.",
+    },
+    "context_recall": {
+        "1": "The response covers none of the reference answer's key points.",
+        "2": "The response covers only a small fraction of the reference's key points.",
+        "3": "The response covers about half of the reference's key points.",
+        "4": "The response covers most of the reference's key points.",
+        "5": "The response covers all of the reference answer's key points.",
+    },
+}
+
+BASE_METRICS = ["dm_relevance", "lore_consistency", "narrative_quality"]
+REFERENCE_METRICS = ["context_precision", "context_recall"]
+
+_MAX_CONTEXT_CHARS = 4000
+_MAX_ANSWER_CHARS = 3000
 
 
-def _sanitize(record: dict) -> dict:
-    """Replace nan/inf with None so the response is JSON-safe."""
-    return {
-        k: (None if isinstance(v, float) and not math.isfinite(v) else v)
-        for k, v in record.items()
-    }
+def _build_contexts(lore_docs: list, campaign_docs: list) -> str:
+    texts = [d.page_content for d in (lore_docs or []) + (campaign_docs or [])]
+    joined = "\n\n---\n\n".join(texts)
+    if len(joined) > _MAX_CONTEXT_CHARS:
+        joined = joined[:_MAX_CONTEXT_CHARS] + "… [truncated]"
+    return joined or "[no retrieved context]"
 
 
-def _run_evaluation_sync(dataset: EvaluationDataset, metrics: list) -> dict:
-    """
-    Fully blocking. Instantiates its own LLM/embeddings so that gRPC
-    channels are bound to THIS thread's event loop, not FastAPI's.
-    """
-    llm = LangchainLLMWrapper(ChatGoogleGenerativeAI(
+def _judge_prompt(
+    metric: str, query: str, answer: str, contexts: str, reference: str | None
+) -> str:
+    rubric_lines = "\n".join(
+        f"{score}: {desc}" for score, desc in RUBRICS[metric].items()
+    )
+    ref_block = f"\nReference answer:\n{reference}\n" if reference else ""
+    return (
+        f"You are a strict judge of AI Dungeon Master narration. "
+        f"Score the DM response on '{metric}' with exactly one integer 1-5.\n\n"
+        f"Rubric:\n{rubric_lines}\n\n"
+        f"Player action:\n{query}\n\n"
+        f"DM response:\n{answer[:_MAX_ANSWER_CHARS]}\n\n"
+        f"Retrieved context:\n{contexts}\n"
+        f"{ref_block}\n"
+        f"Reply with ONLY the integer score (1, 2, 3, 4, or 5), nothing else."
+    )
+
+
+def _parse_score(text: str) -> int | None:
+    match = re.search(r"\b([1-5])\b", text or "")
+    return int(match.group(1)) if match else None
+
+
+def _judge_llm() -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
         model=settings.llm_model,
         google_api_key=settings.gemini_api_key,
-    ))
-    embeddings = LangchainEmbeddingsWrapper(GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=settings.gemini_api_key,
-    ))
-
-    result = evaluate(
-        dataset=dataset,
-        metrics=metrics,
-        llm=llm,
-        embeddings=embeddings,
     )
-    record = result.to_pandas().to_dict(orient="records")[0]
-    return _sanitize(record)
 
 
-async def _run_evaluation(dataset: EvaluationDataset, metrics: list) -> dict:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        partial(_run_evaluation_sync, dataset, metrics),
-    )
+async def _score_metric(
+    llm: ChatGoogleGenerativeAI,
+    metric: str,
+    query: str,
+    answer: str,
+    contexts: str,
+    reference: str | None,
+) -> tuple[str, int | None]:
+    for attempt in range(2):
+        try:
+            raw = await llm.ainvoke(_judge_prompt(metric, query, answer, contexts, reference))
+            content = raw.content if isinstance(raw.content, str) else str(raw.content)
+            return metric, _parse_score(content)
+        except Exception as e:
+            retryable = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+            if retryable and attempt == 0:
+                await asyncio.sleep(25)  # free-tier per-minute budget reset
+                continue
+            return metric, None
+    return metric, None
+
+
+@traceable(name="dm_evaluation")
+async def evaluate_turn(
+    query: str,
+    answer: str,
+    lore_docs: list,
+    campaign_docs: list,
+    reference: str | None = None,
+) -> dict:
+    """Score one turn on the base rubrics (+ reference metrics if given)."""
+    llm = _judge_llm()
+    contexts = _build_contexts(lore_docs, campaign_docs)
+    metrics = BASE_METRICS + (REFERENCE_METRICS if reference else [])
+    results = await asyncio.gather(*[
+        _score_metric(llm, m, query, answer, contexts, reference) for m in metrics
+    ])
+    scores = dict(results)
+    if all(v is None for v in scores.values()):
+        raise RuntimeError("all judge calls failed (see server log / quota)")
+    return scores
 
 
 async def evaluate_without_reference(
     query: str, answer: str, lore_docs: list, campaign_docs: list
 ) -> dict:
-    dataset = EvaluationDataset(samples=[
-        SingleTurnSample(
-            user_input=query,
-            response=answer,
-            retrieved_contexts=_build_contexts(lore_docs, campaign_docs),
-        )
-    ])
-    return await _run_evaluation(
-        dataset, 
-        [dm_relevance, lore_consistency, narrative_quality])
+    return await evaluate_turn(query, answer, lore_docs, campaign_docs)
 
 
-async def evaluate_with_reference(      
+async def evaluate_with_reference(
     query: str, answer: str, lore_docs: list, campaign_docs: list, reference: str
 ) -> dict:
-    dataset = EvaluationDataset(samples=[
-        SingleTurnSample(
-            user_input=query,
-            response=answer,
-            retrieved_contexts=_build_contexts(lore_docs, campaign_docs),
-            reference=reference,
-        )
-    ])
-    return await _run_evaluation(
-        dataset,
-        [dm_relevance, lore_consistency, narrative_quality,
-         context_precision, context_recall],
-    )
+    return await evaluate_turn(query, answer, lore_docs, campaign_docs, reference)

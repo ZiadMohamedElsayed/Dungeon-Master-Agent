@@ -43,14 +43,14 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 | Frontend | HTML5 / JavaScript, served by nginx (Docker) |
 | Styling | CSS3 |
 | API Framework | FastAPI + Uvicorn |
-| LLM | Google Gemini (`gemini-2.5-flash`) via `langchain-google-genai` |
+| LLM | Google Gemini (`gemini-3.8-flash`) via `langchain-google-genai` |
 | Dice | `roll_dice` LangChain tool bound to the DM (`NdM+K` notation) |
 | Embeddings | HuggingFace Sentence Transformers (CPU torch) |
 | Vector Store | ChromaDB (via `langchain-chroma`) |
 | Reranker | CrossEncoder (`sentence-transformers`) |
 | Orchestration | LangChain LCEL + tool-call loop |
 | Document Loaders | PDF / Markdown / Text chunking |
-| Evaluation | RAGAS (`dm_relevance`, `lore_consistency`, `narrative_quality`, + `context_precision`/`recall` with reference) |
+| Evaluation | Direct Gemini judge (1–5 rubrics, concurrent, `dm_evaluation` span in LangSmith) |
 | Config | Pydantic Settings + `.env` |
 | Deployment | Docker + Compose (backend :8000, frontend :5000) |
 
@@ -111,7 +111,7 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 
 6. **Auto-Persistence** — Each completed turn (player action + DM response) is automatically saved back into the campaign vectorstore, building a living, searchable campaign history. Campaigns can be exported/imported as JSON from the sidebar.
 
-7. **Evaluation** — Responses can be optionally evaluated by passing `"evaluate": true` in the request (or ticking *evaluate* in the UI). Three custom DM-appropriate metrics scored 1–5 via an LLM judge are computed: `dm_relevance`, `lore_consistency`, and `narrative_quality`. When a `reference` answer is provided, `context_precision` and `context_recall` are also computed.
+7. **Evaluation** — Responses can be optionally evaluated by passing `"evaluate": true` in the request (or ticking *evaluate* in the UI). Three custom DM-appropriate metrics scored 1–5 by direct Gemini-judge calls (run concurrently) are computed: `dm_relevance`, `lore_consistency`, and `narrative_quality`. When a `reference` answer is provided, `context_precision` and `context_recall` are also computed. The judging is `@traceable` as `dm_evaluation`, so scores show up in LangSmith. (RAGAS was removed: even 0.4.3 hard-imports a `langchain_community` module deleted in 0.4.x.)
 
 ---
 
@@ -155,7 +155,7 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | Variable | Description |
 |---|---|
 | `GEMINI_API_KEY` | Google Gemini API key (free tier ≈ 20 req/day — swap manually when exhausted) |
-| `LLM_MODEL` | Gemini model name (default `gemini-2.5-flash`) |
+| `LLM_MODEL` | Gemini model name (default `gemini-3.8-flash`) |
 | `EMBED_MODEL` | HuggingFace embedding model name |
 | `RERANK_MODEL` | CrossEncoder model name |
 | `LORE_DB_PERSIST_DIR` | ChromaDB persistence path for lore |
@@ -208,7 +208,7 @@ Restart the backend and each `/api/chat/` turn appears as a trace in the project
 
 ## Next Steps
 
-- 🔧 **Evaluator repair** — make RAGAS robust against langchain 1.x (or replace with direct Gemini-judge calls) and verify `{"evaluate": true}` end to end.
+- 🐳 **Docker rebuild** — the running backend image predates short-term memory, LangSmith, and the evaluator rewrite. Rebuild + restart to pick them up (note: flaky PyPI caused one failed build; retry if `pip` errors).
 - 🎲 **Import fidelity** — preserve original `turn`/`timestamp` metadata on campaign import instead of re-chunking.
 - 👥 **Multi-session support** — `session_id`-scoped campaign collections + a session picker in the UI.
 - 🧪 **Tests** — `pytest` coverage for chunking, the documents API, and a mocked RAG turn.

@@ -10,6 +10,7 @@ except ImportError:  # langchain >= 1.x moved to langchain_core
     from langchain_core.runnables import RunnableParallel, RunnableLambda, RunnablePassthrough
     from langchain_core.documents import Document
 from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
+from app.core.tracing import traceable, current_run_id, post_feedback_background
 from app.services.reranker import rerank
 from app.services.dice import roll_dice
 from app.core.config import settings
@@ -226,115 +227,134 @@ async def _generate_with_tools(formatted: dict, max_iters: int = 3) -> str:
     return _text_of(getattr(final, "content", ""))
 
 async def play_turn(query: str, evaluate: bool = False, reference: str | None = None) -> dict:
-    retrieved = await retrieval_step.ainvoke(query)
-    formatted = _rerank_and_format(retrieved)
-    answer = await _generate_with_tools(formatted)
-
-    lore_docs = formatted["lore_docs"]
-    campaign_docs = formatted["campaign_docs"]
-    recent_turns = formatted.get("recent_turns", [])
-
     turn_number = _get_turn_count()
-    _save_turn_to_campaign(query, answer, turn_number)
+    ctx: dict = {}
 
-    response = {
-        "turn": turn_number,
-        "answer": answer,
-        "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)],
-        "sources": {
-            "lore": [
-                {"source": d.metadata.get("source"), "snippet": d.page_content[:200]}
-                for d in lore_docs
-            ],
-            "campaign": [
-                {"source": d.metadata.get("source"), "snippet": d.page_content[:200]}
-                for d in campaign_docs
-            ],
-        },
-    }
+    @traceable(name="dm_turn")
+    async def _run(query: str, turn_number: int, evaluate: bool, reference: str | None, ctx: dict) -> dict:
+        retrieved = await retrieval_step.ainvoke(query)
+        formatted = _rerank_and_format(retrieved)
+        answer = await _generate_with_tools(formatted)
 
+        lore_docs = formatted["lore_docs"]
+        campaign_docs = formatted["campaign_docs"]
+        recent_turns = formatted.get("recent_turns", [])
+
+        _save_turn_to_campaign(query, answer, turn_number)
+
+        response = {
+            "turn": turn_number,
+            "answer": answer,
+            "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)],
+            "sources": {
+                "lore": [
+                    {"source": d.metadata.get("source"), "snippet": d.page_content[:200]}
+                    for d in lore_docs
+                ],
+                "campaign": [
+                    {"source": d.metadata.get("source"), "snippet": d.page_content[:200]}
+                    for d in campaign_docs
+                ],
+            },
+        }
+
+        if evaluate:
+            try:
+                from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
+                if reference:
+                    response["evaluation"] = await evaluate_with_reference(
+                        query, answer, lore_docs, campaign_docs, reference)
+                else:
+                    response["evaluation"] = await evaluate_without_reference(
+                        query, answer, lore_docs, campaign_docs)
+            except Exception as e:
+                response["evaluation"] = {"error": f"evaluation unavailable: {e}"}
+
+        run_id = current_run_id()
+        if run_id is not None:
+            ctx["run_id"] = run_id
+        return response
+
+    response = await _run(query, turn_number, evaluate, reference, ctx)
     if evaluate:
-        try:
-            from app.services.evaluator import evaluate_with_reference, evaluate_without_reference
-            if reference:
-                response["evaluation"] = await evaluate_with_reference(
-                    query, answer, lore_docs, campaign_docs, reference)
-            else:
-                response["evaluation"] = await evaluate_without_reference(
-                    query, answer, lore_docs, campaign_docs)
-        except Exception as e:
-            response["evaluation"] = {"error": f"evaluation unavailable: {e}"}
-
+        # Outside the traced span (the run has ended) so feedback has a parent.
+        post_feedback_background(ctx.get("run_id"), response.get("evaluation"))
     return response
 
 
 async def stream_turn(query: str):
     """Yield SSE dicts: sources, dice?, token*, done|error (with save on done)."""
-    try:
-        from langchain_core.messages import ToolMessage
-    except ImportError:
-        from langchain.schema import ToolMessage  # type: ignore
-    try:
-        retrieved = await retrieval_step.ainvoke(query)
-        formatted = _rerank_and_format(retrieved)
-        lore_docs = formatted["lore_docs"]
-        campaign_docs = formatted["campaign_docs"]
-        recent_turns = formatted.get("recent_turns", [])
-        sources = {
-            "lore": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in lore_docs],
-            "campaign": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in campaign_docs],
-        }
-        yield {"type": "sources", "sources": sources}
-        # Probe: does this turn need dice? If not, the probe response already
-        # holds the full narration — emit it as token chunks (a post-answer
-        # continuation stream would come back empty). If tools were called,
-        # resolve them, then genuinely stream the concluding narration.
-        messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "recent_context", "query") if k in formatted})
-        first = await llm_with_tools.ainvoke(messages)
-        first_calls = getattr(first, "tool_calls", None) or []
-        full: list[str] = []
-        if not first_calls:
-            answer = _text_of(getattr(first, "content", ""))
-            for i in range(0, len(answer), 60):
-                piece = answer[i:i + 60]
-                full.append(piece)
-                yield {"type": "token", "token": piece}
-        else:
-            messages.append(first)
-            final_text = ""
-            for _ in range(4):
-                response = await llm_with_tools.ainvoke(messages)
-                tool_calls = getattr(response, "tool_calls", None) or []
-                if not tool_calls:
-                    final_text = _text_of(getattr(response, "content", ""))
-                    break
-                messages.append(response)
-                for call in tool_calls:
-                    name = call.get("name", "")
-                    args = call.get("args", {}) or {}
-                    call_id = call.get("id", "")
-                    fn = _TOOLS_BY_NAME.get(name)
-                    result = None
-                    if fn is None:
-                        result = f"Unknown tool '{name}'."
-                    else:
-                        try:
-                            result = fn.invoke(args) if hasattr(fn, "invoke") else fn(**args)
-                        except Exception as e:
-                            result = f"Tool error: {e}"
-                    messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
-                    if name == "roll_dice":
-                        yield {"type": "dice", "notation": (args or {}).get("notation", ""), "result": str(result)}
-            for i in range(0, len(final_text), 60):
-                piece = final_text[i:i + 60]
-                full.append(piece)
-                yield {"type": "token", "token": piece}
-        answer = "".join(full)
-        if not answer:
-            yield {"type": "error", "message": "The DM received an empty response. Try again."}
-            return
-        turn_number = _get_turn_count()
-        _save_turn_to_campaign(query, answer, turn_number)
-        yield {"type": "done", "turn": turn_number, "answer": answer, "sources": sources, "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)]}
-    except Exception as e:
-        yield {"type": "error", "message": f"The DM is silent ({type(e).__name__}: {str(e)[:200]})"}
+
+    @traceable(name="dm_turn")
+    async def _stream(query: str):
+        try:
+            from langchain_core.messages import ToolMessage
+        except ImportError:
+            from langchain.schema import ToolMessage  # type: ignore
+        try:
+            retrieved = await retrieval_step.ainvoke(query)
+            formatted = _rerank_and_format(retrieved)
+            lore_docs = formatted["lore_docs"]
+            campaign_docs = formatted["campaign_docs"]
+            recent_turns = formatted.get("recent_turns", [])
+            sources = {
+                "lore": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in lore_docs],
+                "campaign": [{"source": d.metadata.get("source"), "snippet": d.page_content[:200]} for d in campaign_docs],
+            }
+            yield {"type": "sources", "sources": sources}
+            # Probe: does this turn need dice? If not, the probe response already
+            # holds the full narration — emit it as token chunks (a post-answer
+            # continuation stream would come back empty). If tools were called,
+            # resolve them, then genuinely stream the concluding narration.
+            messages = prompt.format_messages(**{k: formatted[k] for k in ("lore_context", "campaign_context", "recent_context", "query") if k in formatted})
+            first = await llm_with_tools.ainvoke(messages)
+            first_calls = getattr(first, "tool_calls", None) or []
+            full: list[str] = []
+            if not first_calls:
+                answer = _text_of(getattr(first, "content", ""))
+                for i in range(0, len(answer), 60):
+                    piece = answer[i:i + 60]
+                    full.append(piece)
+                    yield {"type": "token", "token": piece}
+            else:
+                messages.append(first)
+                final_text = ""
+                for _ in range(4):
+                    response = await llm_with_tools.ainvoke(messages)
+                    tool_calls = getattr(response, "tool_calls", None) or []
+                    if not tool_calls:
+                        final_text = _text_of(getattr(response, "content", ""))
+                        break
+                    messages.append(response)
+                    for call in tool_calls:
+                        name = call.get("name", "")
+                        args = call.get("args", {}) or {}
+                        call_id = call.get("id", "")
+                        fn = _TOOLS_BY_NAME.get(name)
+                        result = None
+                        if fn is None:
+                            result = f"Unknown tool '{name}'."
+                        else:
+                            try:
+                                result = fn.invoke(args) if hasattr(fn, "invoke") else fn(**args)
+                            except Exception as e:
+                                result = f"Tool error: {e}"
+                        messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
+                        if name == "roll_dice":
+                            yield {"type": "dice", "notation": (args or {}).get("notation", ""), "result": str(result)}
+                for i in range(0, len(final_text), 60):
+                    piece = final_text[i:i + 60]
+                    full.append(piece)
+                    yield {"type": "token", "token": piece}
+            answer = "".join(full)
+            if not answer:
+                yield {"type": "error", "message": "The DM received an empty response. Try again."}
+                return
+            turn_number = _get_turn_count()
+            _save_turn_to_campaign(query, answer, turn_number)
+            yield {"type": "done", "turn": turn_number, "answer": answer, "sources": sources, "recent_turns": [t.get("turn") for t in recent_turns if isinstance(t, dict)]}
+        except Exception as e:
+            yield {"type": "error", "message": f"The DM is silent ({type(e).__name__}: {str(e)[:200]})"}
+
+    async for event in _stream(query):
+        yield event
