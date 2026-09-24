@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import documents, chat
+from app.core.tracing import configure_tracing
+
+tracing_enabled = configure_tracing()
 
 app = FastAPI(title="Dungeon Master", version="1.0.0")
 

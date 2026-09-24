@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     top_k_rerank: int = Field(default=4, alias="TOP_K_RERANK")
     short_term_turns: int = Field(default=5, alias="SHORT_TERM_TURNS")
     short_term_max_chars: int = Field(default=1500, alias="SHORT_TERM_MAX_CHARS")
+    langsmith_tracing: bool = Field(default=False, alias="LANGSMITH_TRACING")
+    langsmith_api_key: str = Field(default="", alias="LANGSMITH_API_KEY")
+    langsmith_project: str = Field(default="dungeon-master-agent", alias="LANGSMITH_PROJECT")
+    langsmith_endpoint: str = Field(default="https://api.smith.langchain.com", alias="LANGSMITH_ENDPOINT")
 
     def resolved_lore_dir(self) -> str:
         # Prefer new var unless it is still default and old var was customized

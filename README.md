@@ -164,6 +164,10 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | `TOP_K_RERANK` | Number of chunks to keep after reranking |
 | `SHORT_TERM_TURNS` | Number of recent turns injected verbatim (default `5`) |
 | `SHORT_TERM_MAX_CHARS` | Per-turn char cap in short-term memory (default `1500`) |
+| `LANGSMITH_TRACING` | Set `true` to trace every turn in LangSmith (default `false`) |
+| `LANGSMITH_API_KEY` | LangSmith API key (required when tracing is on) |
+| `LANGSMITH_PROJECT` | Project name traces are grouped under (default `dungeon-master-agent`) |
+| `LANGSMITH_ENDPOINT` | LangSmith API endpoint (default `https://api.smith.langchain.com`) |
 | `CHUNK_SIZE` | Document chunk size (characters) |
 | `CHUNK_OVERLAP` | Chunk overlap (characters) |
 
@@ -184,6 +188,21 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | `DELETE /api/documents/{lore,campaign}/{filename}` | Remove one file |
 | `DELETE /api/documents/{lore,campaign}/clear` | Wipe a collection |
 | `GET /health` | Health check |
+
+---
+
+## Observability (LangSmith)
+
+Every turn (retrieval → rerank → dice tool calls → generation) is a LangChain runnable, so LangSmith tracing needs no code changes — just opt in:
+
+```bash
+# backend/.env
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_your_key_here
+LANGSMITH_PROJECT=dungeon-master-agent
+```
+
+Restart the backend and each `/api/chat/` turn appears as a trace in the project: prompt inputs, retrieved/reranked context, `roll_dice` tool calls with results, token usage, and latency. Leave `LANGSMITH_TRACING=false` (default) to run fully offline.
 
 ---
 
