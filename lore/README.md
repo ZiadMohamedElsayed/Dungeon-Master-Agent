@@ -4,7 +4,7 @@ Sample world lore for the Dungeon Master Agent. Upload these files through the
 frontend (**World Lore** sidebar → drop a scroll) or via the API:
 
 ```bash
-curl -X POST http://localhost:8000/api/documents/lore/upload \
+curl -X POST http://localhost:8000/documents/lore/upload \
   -F "file=@lore/emberfall_lore.md"
 ```
 

@@ -18,7 +18,7 @@ export async function checkHealth() {
 export async function uploadLore(file) {
   const form = new FormData();
   form.append('file', file);
-  const r = await fetch(`${BASE}/api/documents/lore/upload`, {
+  const r = await fetch(`${BASE}/documents/lore/upload`, {
     method: 'POST',
     body: form,
   });
@@ -28,32 +28,32 @@ export async function uploadLore(file) {
 }
 
 export async function deleteLore(filename) {
-  const r = await fetch(`${BASE}/api/documents/lore/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+  const r = await fetch(`${BASE}/documents/lore/${encodeURIComponent(filename)}`, { method: 'DELETE' });
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || 'Delete failed');
   return data;
 }
 
 export async function getLoreList() {
-  const r = await fetch(`${BASE}/api/documents/lore/list`);
+  const r = await fetch(`${BASE}/documents/lore/list`);
   if (!r.ok) throw new Error('Failed to load lore list');
   return r.json();
 }
 
 export async function resetCampaign() {
-  const r = await fetch(`${BASE}/api/documents/campaign/clear`, { method: 'DELETE' });
+  const r = await fetch(`${BASE}/documents/campaign/clear`, { method: 'DELETE' });
   if (!r.ok) throw new Error('Failed to reset campaign');
   return r.json();
 }
 
 export async function getTurnCount() {
-  const r = await fetch(`${BASE}/api/chat/turns/count`);
+  const r = await fetch(`${BASE}/chat/turns/count`);
   if (!r.ok) throw new Error('Failed to load turn count');
   return r.json();
 }
 
 export async function exportCampaign() {
-  const r = await fetch(`${BASE}/api/chat/export`);
+  const r = await fetch(`${BASE}/chat/export`);
   if (!r.ok) throw new Error('Export failed');
   return r.json();
 }
@@ -61,7 +61,7 @@ export async function exportCampaign() {
 export async function importCampaign(file) {
   const form = new FormData();
   form.append('file', file);
-  const r = await fetch(`${BASE}/api/chat/import`, { method: 'POST', body: form });
+  const r = await fetch(`${BASE}/chat/import`, { method: 'POST', body: form });
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || 'Import failed');
   return data;
@@ -69,7 +69,7 @@ export async function importCampaign(file) {
 
 export async function playTurn(query, { evaluate = false, reference = null, stream = false, onToken = null } = {}) {
   if (stream) {
-    const r = await fetch(`${BASE}/api/chat/`, {
+    const r = await fetch(`${BASE}/chat/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, evaluate, reference, stream: true }),
@@ -108,7 +108,7 @@ export async function playTurn(query, { evaluate = false, reference = null, stre
     }
     return result;
   }
-  const r = await fetch(`${BASE}/api/chat/`, {
+  const r = await fetch(`${BASE}/chat/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, evaluate, reference }),

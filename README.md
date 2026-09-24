@@ -62,7 +62,7 @@ Lore KB  Campaign KB        ← ChromaDB Vector Stores
 backend/
 ├── app/
 │   ├── api/
-│   │   ├── chat.py          # POST /api/chat/ (JSON or SSE stream), turn count/history/recent, export/import
+│   │   ├── chat.py          # POST /chat/ (JSON or SSE stream), turn count/history/recent, export/import
 │   │   └── documents.py     # Lore & campaign ingestion: upload / list / delete / clear
 │   ├── core/
 │   │   ├── config.py        # Environment & settings (documented env aliases)
@@ -99,9 +99,9 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 
 ## How It Works
 
-1. **Document Ingestion** — Lore PDFs, Markdown, and text files are uploaded via `/api/documents/lore/upload`, chunked, embedded, and stored in the lore ChromaDB collection (10 MB cap, 409 on duplicates, per-file delete).
+1. **Document Ingestion** — Lore PDFs, Markdown, and text files are uploaded via `/documents/lore/upload`, chunked, embedded, and stored in the lore ChromaDB collection (10 MB cap, 409 on duplicates, per-file delete).
 
-2. **Turn Execution** — When a player submits an action via `/api/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores using a LangChain `RunnableParallel`. The last `SHORT_TERM_TURNS` turns are also loaded verbatim as short-term memory (oldest-first, per-turn char cap); retrieved campaign chunks already in that window are de-duplicated.
+2. **Turn Execution** — When a player submits an action via `/chat/`, the system concurrently retrieves relevant chunks from both the lore and campaign history stores using a LangChain `RunnableParallel`. The last `SHORT_TERM_TURNS` turns are also loaded verbatim as short-term memory (oldest-first, per-turn char cap); retrieved campaign chunks already in that window are de-duplicated.
 
 3. **Reranking** — Both retrieved sets are independently reranked using a CrossEncoder to surface the most contextually relevant chunks.
 
@@ -177,16 +177,16 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 
 | Method & Path | Purpose |
 |---|---|
-| `POST /api/chat/` | Player turn (`{query, evaluate?, reference?, stream?}` → JSON or SSE) |
-| `GET /api/chat/turns/count` | Number of turns played |
-| `GET /api/chat/turns/history` | Recent turn logs |
-| `GET /api/chat/turns/recent` | Short-term memory window (`?limit=N`, default `SHORT_TERM_TURNS`) |
-| `GET /api/chat/export` | Campaign JSON export |
-| `POST /api/chat/import` | Campaign JSON import |
-| `POST /api/documents/{lore,campaign}/upload` | Ingest `.pdf`/`.md`/`.txt` |
-| `GET /api/documents/{lore,campaign}/list` | Files with per-file chunk counts |
-| `DELETE /api/documents/{lore,campaign}/{filename}` | Remove one file |
-| `DELETE /api/documents/{lore,campaign}/clear` | Wipe a collection |
+| `POST /chat/` | Player turn (`{query, evaluate?, reference?, stream?}` → JSON or SSE) |
+| `GET /chat/turns/count` | Number of turns played |
+| `GET /chat/turns/history` | Recent turn logs |
+| `GET /chat/turns/recent` | Short-term memory window (`?limit=N`, default `SHORT_TERM_TURNS`) |
+| `GET /chat/export` | Campaign JSON export |
+| `POST /chat/import` | Campaign JSON import |
+| `POST /documents/{lore,campaign}/upload` | Ingest `.pdf`/`.md`/`.txt` |
+| `GET /documents/{lore,campaign}/list` | Files with per-file chunk counts |
+| `DELETE /documents/{lore,campaign}/{filename}` | Remove one file |
+| `DELETE /documents/{lore,campaign}/clear` | Wipe a collection |
 | `GET /health` | Health check |
 
 ---
@@ -202,7 +202,7 @@ LANGSMITH_API_KEY=lsv2_your_key_here
 LANGSMITH_PROJECT=dungeon-master-agent
 ```
 
-Restart the backend and each `/api/chat/` turn appears as a trace in the project: prompt inputs, retrieved/reranked context, `roll_dice` tool calls with results, token usage, and latency. Leave `LANGSMITH_TRACING=false` (default) to run fully offline.
+Restart the backend and each `/chat/` turn appears as a trace in the project: prompt inputs, retrieved/reranked context, `roll_dice` tool calls with results, token usage, and latency. Leave `LANGSMITH_TRACING=false` (default) to run fully offline.
 
 ---
 

@@ -15,8 +15,8 @@ app.add_middleware(
     allow_credentials=False,
 )
 
-app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(documents.router, prefix="/documents", tags=["documents"])
+app.include_router(chat.router, prefix="/chat", tags=["chat"])
 
 
 @app.get("/health")
