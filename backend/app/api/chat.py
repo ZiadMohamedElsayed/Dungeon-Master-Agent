@@ -7,8 +7,9 @@ from app.services.rag_chain import (
     get_turn_count,
     get_campaign_history,
     get_recent_turns,
+    cache_stats,
 )
-from app.core.vectorstore import campaign_vectorstore, chunk_file
+from app.core.vectorstore import campaign_vectorstore, chunk_file, bump_collection_epoch
 import json
 
 router = APIRouter()
@@ -50,6 +51,11 @@ async def turn_history(limit: int = 50):
 @router.get("/turns/recent")
 async def recent_turns(limit: int | None = None):
     return {"turns": get_recent_turns(limit=limit)}
+
+
+@router.get("/cache/stats")
+async def cache_statistics():
+    return cache_stats()
 
 
 @router.get("/export")
@@ -94,4 +100,5 @@ async def import_campaign(file: UploadFile = File(...)):
         )
         # preserve turn numbers where possible
         campaign_vectorstore.add_documents(chunks if chunks else docs)
+        bump_collection_epoch("campaign")
     return {"message": "Campaign imported", "turns_added": len(docs)}

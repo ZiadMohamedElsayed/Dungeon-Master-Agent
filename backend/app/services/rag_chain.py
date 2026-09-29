@@ -9,11 +9,20 @@ except ImportError:  # langchain >= 1.x moved to langchain_core
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.runnables import RunnableParallel, RunnableLambda, RunnablePassthrough
     from langchain_core.documents import Document
-from app.core.vectorstore import get_lore_retriever, get_campaign_retriever, campaign_vectorstore
+from app.core.vectorstore import (
+    get_lore_retriever,
+    get_campaign_retriever,
+    campaign_vectorstore,
+    collection_epoch,
+    bump_collection_epoch,
+    embeddings,
+)
 from app.core.tracing import traceable, current_run_id, post_feedback_background
 from app.services.reranker import rerank
 from app.services.dice import roll_dice
+from app.services.evaluator import _JUDGE_CACHE as _JUDGE_CACHE_STORE
 from app.core.config import settings
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 llm = ChatGoogleGenerativeAI(model=settings.llm_model,
@@ -72,6 +81,7 @@ def _save_turn_to_campaign(player_action: str, dm_response: str, turn: int):
         },
     )
     campaign_vectorstore.add_documents([doc])
+    bump_collection_epoch("campaign")  # new turn is retrievable → bust cache
 
 
 def _get_turn_count() -> int:
@@ -141,10 +151,46 @@ retrieval_step = RunnableParallel(
     query=RunnablePassthrough()
 )
 
-def _rerank_and_format(inputs: dict) -> dict:
-    query = inputs["query"]
-    lore_docs = rerank(inputs["lore_raw"], query)
-    campaign_docs = rerank(inputs["campaign_raw"], query)
+def _normalize_query(query: str) -> str:
+    return " ".join(query.lower().split())
+
+
+# Retrieval cache, keyed per store: (store, epoch, normalized query).
+# Epochs bump on every write (lore edits, turn auto-saves), so entries
+# never go stale; LRU-bounded. The lore half hits constantly (stable
+# content); the campaign half dedupes back-to-back duplicates/retries.
+_RETRIEVAL_CACHE: OrderedDict = OrderedDict()
+
+
+async def _cached_retrieval(query: str) -> tuple:
+    """Retrieve + CrossEncoder-rerank both stores, served from cache on hits."""
+    norm = _normalize_query(query)
+    keys = {
+        "lore": ("lore", collection_epoch("lore"), norm),
+        "campaign": ("campaign", collection_epoch("campaign"), norm),
+    }
+    lore_docs = campaign_docs = None
+    for store, key in keys.items():
+        if key in _RETRIEVAL_CACHE:
+            _RETRIEVAL_CACHE.move_to_end(key)
+            if store == "lore":
+                lore_docs = _RETRIEVAL_CACHE[key]
+            else:
+                campaign_docs = _RETRIEVAL_CACHE[key]
+    if lore_docs is None or campaign_docs is None:
+        retrieved = await retrieval_step.ainvoke(query)
+        if lore_docs is None:
+            lore_docs = rerank(retrieved["lore_raw"], query)
+            _RETRIEVAL_CACHE[keys["lore"]] = lore_docs
+        if campaign_docs is None:
+            campaign_docs = rerank(retrieved["campaign_raw"], query)
+            _RETRIEVAL_CACHE[keys["campaign"]] = campaign_docs
+        while len(_RETRIEVAL_CACHE) > settings.retrieval_cache_size:
+            _RETRIEVAL_CACHE.popitem(last=False)
+    return lore_docs, campaign_docs
+
+
+def _format_all(query: str, lore_docs: list, campaign_docs: list) -> dict:
     # Short-term memory: verbatim recent turns (recency, not semantic search).
     recent_turns = get_recent_turns()
     recent_turn_numbers = {t.get("turn") for t in recent_turns if isinstance(t, dict)}
@@ -162,6 +208,26 @@ def _rerank_and_format(inputs: dict) -> dict:
         "lore_context": _format_docs(lore_docs, "World Lore"),
         "campaign_context": _format_docs(campaign_docs, "Campaign History"),
         "recent_context": _format_recent_turns(recent_turns),
+    }
+
+
+def _rerank_and_format(inputs: dict) -> dict:
+    query = inputs["query"]
+    lore_docs = rerank(inputs["lore_raw"], query)
+    campaign_docs = rerank(inputs["campaign_raw"], query)
+    return _format_all(query, lore_docs, campaign_docs)
+
+
+def cache_stats() -> dict:
+    """Cache/epoch introspection for GET /chat/cache/stats."""
+    return {
+        "embeddings": embeddings.cache_info(),
+        "retrieval_entries": len(_RETRIEVAL_CACHE),
+        "judge_entries": len(_JUDGE_CACHE_STORE),
+        "epochs": {
+            "lore": collection_epoch("lore"),
+            "campaign": collection_epoch("campaign"),
+        },
     }
 
 dm_chain = (
@@ -232,8 +298,8 @@ async def play_turn(query: str, evaluate: bool = False, reference: str | None = 
 
     @traceable(name="dm_turn")
     async def _run(query: str, turn_number: int, evaluate: bool, reference: str | None, ctx: dict) -> dict:
-        retrieved = await retrieval_step.ainvoke(query)
-        formatted = _rerank_and_format(retrieved)
+        lore_docs, campaign_docs = await _cached_retrieval(query)
+        formatted = _format_all(query, lore_docs, campaign_docs)
         answer = await _generate_with_tools(formatted)
 
         lore_docs = formatted["lore_docs"]
@@ -292,8 +358,8 @@ async def stream_turn(query: str):
         except ImportError:
             from langchain.schema import ToolMessage  # type: ignore
         try:
-            retrieved = await retrieval_step.ainvoke(query)
-            formatted = _rerank_and_format(retrieved)
+            lore_docs, campaign_docs = await _cached_retrieval(query)
+            formatted = _format_all(query, lore_docs, campaign_docs)
             lore_docs = formatted["lore_docs"]
             campaign_docs = formatted["campaign_docs"]
             recent_turns = formatted.get("recent_turns", [])

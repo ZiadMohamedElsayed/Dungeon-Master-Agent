@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.core.vectorstore import chunk_file, lore_vectorstore, campaign_vectorstore
+from app.core.vectorstore import chunk_file, lore_vectorstore, campaign_vectorstore, bump_collection_epoch
 
 router = APIRouter()
 
@@ -30,6 +30,7 @@ def register_document_routes(prefix: str, vectorstore):
         
         chunks, num_docs = chunk_file(content, file.filename, source_name=file.filename)
         vectorstore.add_documents(chunks)
+        bump_collection_epoch(prefix)
         return {
             "message": "Ingested successfully",
             "chunks_added": len(chunks),
@@ -55,6 +56,7 @@ def register_document_routes(prefix: str, vectorstore):
     @router.delete(f"/{prefix}/clear")
     async def clear_documents():
         vectorstore._collection.delete(where={"source": {"$ne": ""}})
+        bump_collection_epoch(prefix)
         return {"message": "All documents cleared"}
 
     @router.delete(f"/{prefix}/{{filename}}")
@@ -66,6 +68,7 @@ def register_document_routes(prefix: str, vectorstore):
         if not existing["metadatas"]:
             raise HTTPException(404, f"'{filename}' not found")
         vectorstore._collection.delete(where={"source": {"$eq": filename}})
+        bump_collection_epoch(prefix)
         return {"message": f"'{filename}' deleted"}
 
 
