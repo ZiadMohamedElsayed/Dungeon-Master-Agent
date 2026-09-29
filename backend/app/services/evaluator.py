@@ -10,7 +10,10 @@ turn's query/answer/retrieved contexts (+ reference when provided).
 """
 
 import asyncio
+import hashlib
+import json
 import re
+from collections import OrderedDict
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -74,6 +77,21 @@ REFERENCE_METRICS = ["context_precision", "context_recall"]
 
 _MAX_CONTEXT_CHARS = 4000
 _MAX_ANSWER_CHARS = 3000
+
+# Judge-score cache: identical (query, answer, contexts, reference) replays
+# (retries, double-submits) skip 3-5 Gemini calls. Judging is meant to be
+# deterministic, so entries never go stale; LRU-bounded.
+_JUDGE_CACHE: OrderedDict = OrderedDict()
+
+
+def _judge_cache_key(
+    query: str, answer: str, contexts: str, reference: str | None, metrics: list
+) -> str:
+    blob = json.dumps(
+        {"q": query, "a": answer, "c": contexts, "r": reference, "m": metrics},
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def _build_contexts(lore_docs: list, campaign_docs: list) -> str:
@@ -149,12 +167,19 @@ async def evaluate_turn(
     llm = _judge_llm()
     contexts = _build_contexts(lore_docs, campaign_docs)
     metrics = BASE_METRICS + (REFERENCE_METRICS if reference else [])
+    key = _judge_cache_key(query, answer, contexts, reference, metrics)
+    if key in _JUDGE_CACHE:
+        _JUDGE_CACHE.move_to_end(key)
+        return dict(_JUDGE_CACHE[key])
     results = await asyncio.gather(*[
         _score_metric(llm, m, query, answer, contexts, reference) for m in metrics
     ])
     scores = dict(results)
     if all(v is None for v in scores.values()):
         raise RuntimeError("all judge calls failed (see server log / quota)")
+    _JUDGE_CACHE[key] = scores
+    while len(_JUDGE_CACHE) > settings.eval_cache_size:
+        _JUDGE_CACHE.popitem(last=False)
     return scores
 
 
