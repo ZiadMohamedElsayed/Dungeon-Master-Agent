@@ -164,6 +164,10 @@ PROJECT_STATUS.md            # Current state, changelog, and remaining work
 | `TOP_K_RERANK` | Number of chunks to keep after reranking |
 | `SHORT_TERM_TURNS` | Number of recent turns injected verbatim (default `5`) |
 | `SHORT_TERM_MAX_CHARS` | Per-turn char cap in short-term memory (default `1500`) |
+| `EMBED_CACHE_QUERY_SIZE` | LRU entries for query embeddings (default `512`) |
+| `EMBED_CACHE_DOCS_SIZE` | LRU entries for document embeddings (default `4096`) |
+| `EVAL_CACHE_SIZE` | LRU entries for judge scores (default `128`) |
+| `RETRIEVAL_CACHE_SIZE` | LRU entries for reranked retrieval per store (default `100`) |
 | `LANGSMITH_TRACING` | Set `true` to trace every turn in LangSmith (default `false`) |
 | `LANGSMITH_API_KEY` | LangSmith API key (required when tracing is on) |
 | `LANGSMITH_PROJECT` | Project name traces are grouped under (default `dungeon-master-agent`) |
